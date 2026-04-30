@@ -12,9 +12,10 @@ from typing import Callable
 import duckdb
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .chat import stream_chat
 from .data_source import DataSource
 from .utils import arrow_to_bytes, to_parquet_bytes
 
@@ -24,6 +25,7 @@ def make_server(
     *,
     static_path: str,
     mcp: bool = False,
+    chat: bool = False,
     cors: bool | list[str] = False,
     duckdb_uri: str | None = None,
 ):
@@ -84,6 +86,9 @@ def make_server(
         # MCP
         if mcp:
             meta["mcp"] = {"type": "websocket"}
+        # Chat
+        if chat:
+            meta["chat"] = {"endpoint": "/data/chat"}
 
         return data_source.metadata | meta
 
@@ -189,6 +194,41 @@ def make_server(
 
     if mcp:
         make_mcp_proxy(app)
+
+    if chat:
+        # Reuse the server-mode DuckDB connection for sample rows when available;
+        # otherwise spin up a read-only one so chat works in --duckdb=wasm mode too.
+        chat_connection = duckdb_connection
+        if chat_connection is None:
+            chat_connection = make_duckdb_connection(data_source.dataset)
+
+        @app.post("/data/chat")
+        async def post_chat(req: Request):
+            body = await req.json()
+            mcp_url = None
+            if mcp:
+                # The Claude Agent SDK can connect back to the viewer's tool
+                # surface through the existing /mcp HTTP proxy.
+                base = str(req.base_url).rstrip("/")
+                mcp_url = f"{base}/mcp"
+
+            async def event_stream():
+                async for chunk in stream_chat(
+                    body,
+                    duckdb_connection=chat_connection,
+                    table="dataset",
+                    mcp_url=mcp_url,
+                ):
+                    yield chunk
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
     # Static files for the frontend
     app.mount("/", StaticFiles(directory=static_path, html=True))

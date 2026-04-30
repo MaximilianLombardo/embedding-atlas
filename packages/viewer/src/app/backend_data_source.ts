@@ -37,6 +37,11 @@ interface Metadata {
   mcp?: {
     type: "websocket";
   };
+
+  chat?: {
+    /** Path or URL of the chat endpoint relative to the server. */
+    endpoint: string;
+  };
 }
 
 export class BackendDataSource implements DataSource {
@@ -100,6 +105,22 @@ export class BackendDataSource implements DataSource {
 
     if (metadata.mcp && metadata.mcp.type == "websocket") {
       metadata.props.modelContext = new MCPWebSocketServer(joinUrl(this.serverUrl, "mcp_websocket"));
+    }
+
+    if (metadata.chat?.endpoint) {
+      // Resolve relative to the server origin so the browser can POST regardless
+      // of where the viewer is mounted in the page.
+      let endpoint = metadata.chat.endpoint;
+      if (!endpoint.startsWith("http")) {
+        let stripped = endpoint.startsWith("/") ? endpoint.slice(1) : endpoint;
+        // serverUrl is `<origin>/data/`; chat endpoint metadata is `/data/chat`,
+        // so strip the leading `data/` if present to avoid double-joining.
+        if (stripped.startsWith("data/")) {
+          stripped = stripped.slice(5);
+        }
+        endpoint = joinUrl(this.serverUrl, stripped);
+      }
+      metadata.props.chatEndpoint = endpoint;
     }
 
     return metadata.props;

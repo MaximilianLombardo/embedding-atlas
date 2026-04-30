@@ -34,6 +34,11 @@ dependencies = [
   "narwhals >= 2.0.0",
 ]
 
+[project.optional-dependencies]
+chat = [
+  "claude-agent-sdk>=0.0.5",
+]
+
 [project.scripts]
 embedding-atlas = "embedding_atlas.cli:main"
 

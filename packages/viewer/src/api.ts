@@ -92,6 +92,12 @@ export interface EmbeddingAtlasProps {
   /** Model context API where the component will register its tools to. */
   modelContext?: ModelContextAPI | null;
 
+  /** Endpoint URL of a selection-aware chat backend. When set, ⌘K opens a
+   *  command palette with a Claude chat panel that POSTs to this URL and
+   *  consumes a Server-Sent Events stream. The backend in `packages/backend`
+   *  exposes a compatible endpoint at `/data/chat` when started with `--chat`. */
+  chatEndpoint?: string | null;
+
   /** A cache to speed up initialization of the viewer. */
   cache?: Cache | null;
 }

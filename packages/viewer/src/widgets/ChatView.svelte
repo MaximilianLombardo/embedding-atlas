@@ -1,0 +1,212 @@
+<!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
+<script lang="ts">
+  import DOMPurify from "dompurify";
+  import { marked } from "marked";
+  import { tick } from "svelte";
+
+  import Spinner from "./Spinner.svelte";
+
+  import { streamChat, type ChatContext, type ChatEvent, type ChatMessage } from "../utils/chat_client.js";
+
+  interface ToolCall {
+    id: string;
+    name: string;
+    input: unknown;
+    result?: string;
+    isError?: boolean;
+  }
+
+  interface Turn {
+    role: "user" | "assistant";
+    text: string;
+    tools: ToolCall[];
+  }
+
+  interface Props {
+    endpoint: string | null;
+    context: ChatContext;
+    initialPrompt?: string | null;
+  }
+
+  let { endpoint, context, initialPrompt = null }: Props = $props();
+
+  let turns = $state<Turn[]>([]);
+  let pending = $state(false);
+  // svelte-ignore state_referenced_locally
+  let draft = $state(initialPrompt ?? "");
+  let scroller: HTMLDivElement | undefined;
+
+  function renderMarkdown(text: string): string {
+    const raw = marked.parse(text, { async: false }) as string;
+    return DOMPurify.sanitize(raw);
+  }
+
+  async function scrollToBottom() {
+    await tick();
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  async function send() {
+    if (!endpoint) return;
+    const prompt = draft.trim();
+    if (!prompt || pending) return;
+    draft = "";
+
+    // Build the message list from the *previous* turns (this user prompt is
+    // included separately so we don't depend on the not-yet-persisted state).
+    const messages: ChatMessage[] = [
+      ...turns.filter((t) => t.role === "user" || t.text.length > 0).map((t) => ({ role: t.role, content: t.text })),
+      { role: "user", content: prompt },
+    ];
+
+    turns = [
+      ...turns,
+      { role: "user", text: prompt, tools: [] },
+      { role: "assistant", text: "", tools: [] },
+    ];
+    const assistantIdx = turns.length - 1;
+    pending = true;
+    await scrollToBottom();
+
+    try {
+      for await (const event of streamChat(endpoint, { messages, context })) {
+        // Mutate the *proxied* turn fetched by index — Svelte 5's $state
+        // wraps array entries in deep proxies, so the original object
+        // reference we constructed above is detached from reactivity.
+        applyEvent(assistantIdx, event);
+        await scrollToBottom();
+      }
+    } catch (err) {
+      turns[assistantIdx].text += `\n\n_Error: ${err instanceof Error ? err.message : String(err)}_`;
+    } finally {
+      pending = false;
+    }
+  }
+
+  function applyEvent(turnIndex: number, event: ChatEvent) {
+    const turn = turns[turnIndex];
+    if (!turn) return;
+    switch (event.type) {
+      case "delta":
+        turn.text += event.text;
+        break;
+      case "tool_use":
+        turn.tools.push({ id: event.id, name: event.name, input: event.input });
+        break;
+      case "tool_result": {
+        const match = turn.tools.find((t) => t.id === event.id);
+        if (match) {
+          match.result = event.content;
+          match.isError = event.is_error;
+        }
+        break;
+      }
+      case "error":
+        turn.text += `\n\n_Error: ${event.message}_`;
+        break;
+      case "context":
+      case "done":
+        break;
+    }
+  }
+
+  function onTextareaKeydown(e: KeyboardEvent) {
+    // cmdk's Command.Root listens at the document level and intercepts Enter
+    // to "select" a command item. Stop propagation so the textarea owns Enter
+    // when the user is composing a chat message.
+    e.stopPropagation();
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  let textareaEl: HTMLTextAreaElement | undefined = $state();
+
+  // Pull focus from cmdk's autofocused filter input down to the chat textarea
+  // once the endpoint is known.
+  $effect(() => {
+    if (endpoint && textareaEl) {
+      textareaEl.focus();
+    }
+  });
+</script>
+
+<div class="flex flex-col h-full">
+  <div bind:this={scroller} class="flex-1 overflow-auto px-4 py-3 space-y-4 text-sm">
+    {#if turns.length === 0}
+      <div class="text-slate-500 dark:text-slate-400">
+        Ask Claude about the rows you have selected. The agent has access to <code>run_sql_query</code>
+        and the rest of the viewer's tool surface, plus a small sample of the selection up front.
+      </div>
+    {/if}
+    {#each turns as turn, i (i)}
+      <div class="space-y-2">
+        {#if turn.role === "user"}
+          <div class="flex justify-end">
+            <div class="rounded-lg px-3 py-2 max-w-[80%] bg-blue-600 text-white whitespace-pre-wrap">
+              {turn.text}
+            </div>
+          </div>
+        {:else}
+          <div class="flex flex-col gap-2">
+            {#each turn.tools as tool (tool.id)}
+              <details
+                class="rounded-md border text-xs"
+                class:border-slate-300={!tool.isError}
+                class:dark:border-slate-700={!tool.isError}
+                class:border-red-400={tool.isError}
+              >
+                <summary class="px-2 py-1 cursor-pointer select-none text-slate-600 dark:text-slate-300">
+                  {tool.isError ? "⚠" : "⚙"} <span class="font-mono">{tool.name}</span>
+                  {#if tool.result === undefined}
+                    <span class="text-slate-400">…</span>
+                  {/if}
+                </summary>
+                <div class="px-2 py-1 border-t border-slate-200 dark:border-slate-700 space-y-1">
+                  <pre
+                    class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">{JSON.stringify(
+                      tool.input,
+                      null,
+                      2,
+                    )}</pre>
+                  {#if tool.result !== undefined}
+                    <pre
+                      class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                  {/if}
+                </div>
+              </details>
+            {/each}
+            {#if turn.text}
+              <div class="prose prose-sm dark:prose-invert max-w-none">
+                {@html renderMarkdown(turn.text)}
+              </div>
+            {/if}
+            {#if pending && i === turns.length - 1 && turn.text === "" && turn.tools.length === 0}
+              <Spinner status="Thinking…" />
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/each}
+  </div>
+
+  <div class="border-t border-slate-200 dark:border-slate-700 p-2">
+    {#if !endpoint}
+      <div class="text-xs text-slate-500 dark:text-slate-400 px-2 py-1">
+        Chat backend not configured. Pass <code>chatEndpoint</code> to <code>EmbeddingAtlas</code>
+        or run the dev server with <code>--chat</code>.
+      </div>
+    {:else}
+      <textarea
+        bind:this={textareaEl}
+        bind:value={draft}
+        onkeydown={onTextareaKeydown}
+        placeholder="Ask about the selection… (Enter to send, Shift+Enter for newline)"
+        rows="2"
+        disabled={pending}
+        class="w-full resize-none bg-transparent outline-none px-2 py-1 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 disabled:opacity-50"
+      ></textarea>
+    {/if}
+  </div>
+</div>

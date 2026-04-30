@@ -75,6 +75,7 @@
       stylesheet={config.stylesheet}
       initialState={initialState ?? config.initialState}
       modelContext={config.modelContext}
+      chatEndpoint={config.chatEndpoint}
       onExportApplication={dataSource.downloadArchive ? onDownloadArchive : null}
       onExportSelection={dataSource.downloadSelection ? onExportSelection : null}
       onStateChange={debounce(onStateChange, 200)}

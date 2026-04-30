@@ -13,6 +13,8 @@
   import SearchResultList from "./views/SearchResultList.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
   import Button from "./widgets/Button.svelte";
+  import ChatView from "./widgets/ChatView.svelte";
+  import CommandPalette from "./widgets/CommandPalette.svelte";
   import Input from "./widgets/Input.svelte";
   import PopupButton from "./widgets/PopupButton.svelte";
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
@@ -59,6 +61,7 @@
     onExportSelection,
     onStateChange,
     modelContext,
+    chatEndpoint,
     cache,
   }: EmbeddingAtlasProps = $props();
 
@@ -276,8 +279,20 @@
     initialized = true;
   });
 
+  let paletteOpen = $state(false);
+
   function onWindowKeydown(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      paletteOpen = !paletteOpen;
+      e.preventDefault();
+      return;
+    }
     if (e.key == "Escape") {
+      if (paletteOpen) {
+        paletteOpen = false;
+        e.preventDefault();
+        return;
+      }
       resetFilter();
       e.preventDefault();
       try {
@@ -607,5 +622,24 @@
       {/if}
     </div>
   </div>
+
+  {#if initialized}
+    <CommandPalette open={paletteOpen} onClose={() => (paletteOpen = false)}>
+      {#snippet statusBar()}
+        <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
+      {/snippet}
+      {#snippet body()}
+        <ChatView
+          endpoint={chatEndpoint ?? null}
+          context={{
+            predicate: currentPredicate(),
+            table: data.table,
+            id_column: data.id,
+            text_column: data.text ?? null,
+          }}
+        />
+      {/snippet}
+    </CommandPalette>
+  {/if}
 </div>
 <svelte:window onkeydown={onWindowKeydown} />

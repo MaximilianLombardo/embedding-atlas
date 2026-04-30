@@ -5,6 +5,7 @@
 import importlib
 import json
 import logging
+import os
 import pathlib
 import socket
 from pathlib import Path
@@ -340,6 +341,12 @@ def import_modules(names: list[str]):
     default=False,
     help="Enable MCP (Model Context Protocol) server endpoints for external tool integration.",
 )
+@click.option(
+    "--chat/--no-chat",
+    "enable_chat",
+    default=False,
+    help="Enable the selection-aware chat endpoint at /data/chat. Requires the optional `claude-agent-sdk` dependency and ANTHROPIC_API_KEY for live responses; falls back to an echo stream otherwise.",
+)
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(
     inputs,
@@ -380,6 +387,7 @@ def main(
     stop_words: str | None,
     labels: str | None,
     enable_mcp: bool,
+    enable_chat: bool,
 ):
     apply_logging_config()
 
@@ -546,7 +554,12 @@ def main(
             ]
 
     app = make_server(
-        dataset, static_path=static, duckdb_uri=duckdb, mcp=enable_mcp, cors=cors_config
+        dataset,
+        static_path=static,
+        duckdb_uri=duckdb,
+        mcp=enable_mcp,
+        chat=enable_chat,
+        cors=cors_config,
     )
 
     if enable_auto_port:
@@ -576,6 +589,19 @@ def main(
         )
     else:
         print(click.style("  ➜ MCP server: use --mcp to enable", dim=True))
+    if enable_chat:
+        chat_url = click.style(f"http://{host}:{new_port}/data/chat", fg="blue")
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            print(f"  ➜ Chat: {chat_url}")
+        else:
+            print(
+                f"  ➜ Chat: {chat_url} "
+                + click.style(
+                    "(echo mode — set ANTHROPIC_API_KEY for live responses)", dim=True
+                )
+            )
+    else:
+        print(click.style("  ➜ Chat: use --chat to enable", dim=True))
     print(click.style("  ➜ Press CTRL+C to quit", dim=True))
     print()
     print(click.style("-" * 79, dim=True))
