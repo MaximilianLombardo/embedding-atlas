@@ -2,21 +2,37 @@
 
 """Selection-aware chat backend for the Embedding Atlas viewer.
 
-Streams Server-Sent Events to the frontend command palette. Falls back to a
-plain echo response when ``claude-agent-sdk`` or ``ANTHROPIC_API_KEY`` is
-unavailable, so the wire shape can be exercised end-to-end without an LLM.
+Two implementations live behind a single SSE event schema:
+
+  - "direct" (default): calls the Anthropic Messages API directly with token
+    streaming and a single built-in `run_sql_query` tool against the local
+    DuckDB connection. Fast (~2s first-token latency) and cheap.
+
+  - "agent": delegates to the Python Claude Agent SDK, which shells out to
+    the `claude` CLI and inherits Claude Code's full MCP tool surface
+    (chart/layout CRUD, screenshots, etc). Slower first turn (~10–15s) but
+    can drive the whole UI.
+
+Both paths fall back to a deterministic echo stream when neither
+`anthropic` nor `claude-agent-sdk` is installed (or when no API key is
+present), so the wire shape can be exercised end-to-end without any LLM.
 """
 
 import json
 import os
-import re
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 import duckdb
 
 
 SAMPLE_ROW_LIMIT = 10
 TEXT_PREVIEW_CHARS = 240
+MAX_TOOL_ITERATIONS = 5
+TOOL_RESULT_TRUNCATE = 8000
+# Drop array columns longer than this from the sample. Embedding columns
+# (e.g. 1024-dim vectors) blow up the system prompt past the model's context
+# window if included raw, and they aren't useful for an LLM to read anyway.
+SAMPLE_ARRAY_CUTOFF = 16
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
@@ -74,12 +90,45 @@ def _truncate(value: Any, limit: int = TEXT_PREVIEW_CHARS) -> Any:
     return value
 
 
+def _summarize_for_prompt(value: Any) -> Any:
+    """Make an arbitrary cell value safe to dump into the system prompt.
+
+    Truncates long strings, summarizes long arrays (the typical case is a
+    1024-d embedding vector that would otherwise blow the context window),
+    and recurses into nested dicts/lists.
+    """
+    if isinstance(value, str):
+        return _truncate(value)
+    if isinstance(value, list):
+        if len(value) > SAMPLE_ARRAY_CUTOFF:
+            preview = [_summarize_for_prompt(v) for v in value[:3]]
+            return f"<array len={len(value)} preview={preview}>"
+        return [_summarize_for_prompt(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _summarize_for_prompt(v) for k, v in value.items()}
+    return value
+
+
+def _resolve_api_key() -> str | None:
+    # The Anthropic SDK looks for ANTHROPIC_API_KEY. Accept the shorter
+    # ANTHROPIC_KEY alias (used by adjacent projects) and re-export it.
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+    alias = os.environ.get("ANTHROPIC_KEY")
+    if alias:
+        os.environ["ANTHROPIC_API_KEY"] = alias
+        return alias
+    return None
+
+
 def _build_system_prompt(
     predicate: str | None,
     table: str,
     text_column: str | None,
     row_count: int | None,
     sample: list[dict[str, Any]],
+    has_sql_tool: bool,
 ) -> str:
     selection_clause = (
         f"WHERE {predicate}" if predicate else "the user has not made a selection"
@@ -95,46 +144,232 @@ def _build_system_prompt(
         else "There is no designated text column."
     )
     truncated_sample = [
-        {k: _truncate(v) for k, v in row.items()} for row in sample[:SAMPLE_ROW_LIMIT]
+        {k: _summarize_for_prompt(v) for k, v in row.items()}
+        for row in sample[:SAMPLE_ROW_LIMIT]
     ]
+    tool_hint = (
+        "If the user asks about something the sample doesn't cover, call the "
+        "`run_sql_query` tool to inspect more rows. Always scope queries to the "
+        "selection by including the WHERE predicate (or by adding "
+        "`WHERE <predicate>` if the user has selected something). Keep result "
+        "sets small."
+        if has_sql_tool
+        else ""
+    )
     return (
         "You are an analyst embedded in the Apple Embedding Atlas viewer. "
-        "The user is exploring a dataset and has lassoed a region of the "
-        "embedding space. Answer their questions by referring to the selection "
-        "and, when useful, by calling the `run_sql_query` tool against the "
-        f"`{table}` table.\n\n"
+        "The user is exploring a dataset and may have lassoed a region of the "
+        "embedding space. Be concise; favor concrete claims grounded in the "
+        "rows you can see.\n\n"
         f"Current selection: {selection_clause}.\n"
         f"{count_clause}\n"
         f"{text_hint}\n\n"
         f"Sample rows from the current selection (truncated): "
-        f"{json.dumps(truncated_sample)}"
+        f"{json.dumps(truncated_sample)}\n\n"
+        f"{tool_hint}"
     )
 
 
-async def _echo_stream(
+# ─── direct Messages API path ──────────────────────────────────────────────
+
+
+def _sql_tool_definition(table: str, predicate: str | None) -> dict[str, Any]:
+    pred_hint = f" The user's current WHERE predicate is `{predicate}`." if predicate else ""
+    return {
+        "name": "run_sql_query",
+        "description": (
+            f"Run a read-only SELECT query against the `{table}` DuckDB table "
+            "and return rows as JSON. Use this when the sample in the system "
+            "prompt is insufficient. Only SELECT statements are accepted; "
+            "writes and DDL are blocked. Keep result sets under 100 rows by "
+            "using LIMIT or aggregations."
+            + pred_hint
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "A single SELECT statement, no trailing semicolon.",
+                }
+            },
+            "required": ["sql"],
+        },
+    }
+
+
+def _run_sql_tool(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    *,
+    row_cap: int = 100,
+) -> tuple[str, bool]:
+    """Execute a guarded SELECT and return (json_text, is_error)."""
+    stripped = sql.strip().rstrip(";").lstrip()
+    lowered = stripped.lower()
+    if not lowered.startswith(("select", "with")):
+        return ("Only SELECT/WITH queries are allowed.", True)
+    if ";" in stripped:
+        return ("Multiple statements are not allowed.", True)
+    try:
+        df = connection.execute(stripped).fetchdf()
+    except Exception as exc:
+        return (f"DuckDB error: {exc}", True)
+    if len(df) > row_cap:
+        df = df.head(row_cap)
+        truncated = True
+    else:
+        truncated = False
+    payload = {
+        "rows": json.loads(df.to_json(orient="records")),
+        "row_count": int(len(df)),
+        "truncated": truncated,
+    }
+    return (json.dumps(payload, default=str), False)
+
+
+async def _direct_stream(
     messages: list[dict[str, Any]],
     system_prompt: str,
+    *,
+    model: str,
+    duckdb_connection: duckdb.DuckDBPyConnection | None,
+    table: str,
+    predicate: str | None,
 ) -> AsyncIterator[bytes]:
-    """A stand-in stream used when the Claude Agent SDK is not configured.
+    """Anthropic Messages API path with streaming + run_sql_query tool loop."""
+    from anthropic import AsyncAnthropic
 
-    Emits a single delta echoing the latest user message, then a done event.
-    Useful for verifying the SSE wiring without an LLM.
-    """
-    last_user = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
-        "(no user message)",
-    )
+    client = AsyncAnthropic()
+    tools: list[dict[str, Any]] = []
+    if duckdb_connection is not None:
+        tools.append(_sql_tool_definition(table, predicate))
+
+    history: list[dict[str, Any]] = [
+        {"role": m["role"], "content": m["content"]} for m in messages
+    ]
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        # Each turn: stream the assistant response. If it ends with a tool
+        # use, run the tool locally and loop. Otherwise, finish.
+        async with client.messages.stream(
+            model=model,
+            max_tokens=2048,
+            system=system_prompt,
+            tools=tools or None,
+            messages=history,
+        ) as stream:
+            assistant_blocks: list[dict[str, Any]] = []
+            current_text = ""
+            current_tool_use: dict[str, Any] | None = None
+            current_tool_input_buf = ""
+
+            async for event in stream:
+                kind = getattr(event, "type", None)
+                if kind == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        current_tool_use = {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": {},
+                        }
+                        current_tool_input_buf = ""
+                    elif block.type == "text":
+                        current_text = ""
+                elif kind == "content_block_delta":
+                    delta = event.delta
+                    delta_type = getattr(delta, "type", None)
+                    if delta_type == "text_delta":
+                        text = delta.text
+                        current_text += text
+                        yield _sse("delta", {"text": text})
+                    elif delta_type == "input_json_delta":
+                        current_tool_input_buf += delta.partial_json
+                elif kind == "content_block_stop":
+                    if current_tool_use is not None:
+                        try:
+                            current_tool_use["input"] = (
+                                json.loads(current_tool_input_buf)
+                                if current_tool_input_buf
+                                else {}
+                            )
+                        except json.JSONDecodeError:
+                            current_tool_use["input"] = {"_raw": current_tool_input_buf}
+                        assistant_blocks.append(current_tool_use)
+                        yield _sse(
+                            "tool_use",
+                            {
+                                "id": current_tool_use["id"],
+                                "name": current_tool_use["name"],
+                                "input": current_tool_use["input"],
+                            },
+                        )
+                        current_tool_use = None
+                    elif current_text:
+                        assistant_blocks.append({"type": "text", "text": current_text})
+                        current_text = ""
+                elif kind == "message_stop":
+                    pass
+
+            final = await stream.get_final_message()
+            stop_reason = final.stop_reason
+            usage = {
+                "input_tokens": getattr(final.usage, "input_tokens", 0),
+                "output_tokens": getattr(final.usage, "output_tokens", 0),
+            }
+
+        # Decide whether to loop
+        history.append({"role": "assistant", "content": assistant_blocks})
+
+        tool_uses = [b for b in assistant_blocks if b.get("type") == "tool_use"]
+        if not tool_uses or stop_reason != "tool_use":
+            yield _sse("done", {"reason": stop_reason or "stop", "usage": usage})
+            return
+
+        # Execute tools and emit tool_result events
+        tool_results_msg: list[dict[str, Any]] = []
+        for use in tool_uses:
+            if use["name"] == "run_sql_query" and duckdb_connection is not None:
+                sql = use["input"].get("sql", "")
+                content, is_error = _run_sql_tool(duckdb_connection, sql)
+                trimmed = _truncate(content, TOOL_RESULT_TRUNCATE)
+                yield _sse(
+                    "tool_result",
+                    {"id": use["id"], "content": trimmed, "is_error": is_error},
+                )
+                tool_results_msg.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use["id"],
+                        "content": trimmed,
+                        "is_error": is_error,
+                    }
+                )
+            else:
+                msg = f"Tool `{use['name']}` is not available in direct chat mode."
+                yield _sse(
+                    "tool_result",
+                    {"id": use["id"], "content": msg, "is_error": True},
+                )
+                tool_results_msg.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": use["id"],
+                        "content": msg,
+                        "is_error": True,
+                    }
+                )
+        history.append({"role": "user", "content": tool_results_msg})
+
     yield _sse(
-        "delta",
-        {
-            "text": (
-                "Chat backend is not configured (no claude-agent-sdk / "
-                "ANTHROPIC_API_KEY). Echo: "
-                + (last_user if isinstance(last_user, str) else json.dumps(last_user))
-            ),
-        },
+        "error",
+        {"message": f"Reached max tool iterations ({MAX_TOOL_ITERATIONS})"},
     )
-    yield _sse("done", {"reason": "echo"})
+
+
+# ─── Claude Agent SDK path (full MCP, slower) ──────────────────────────────
 
 
 async def _agent_stream(
@@ -143,8 +378,7 @@ async def _agent_stream(
     *,
     mcp_url: str | None,
 ) -> AsyncIterator[bytes]:
-    """Real Claude Agent SDK loop. Lazily imported."""
-    from claude_agent_sdk import (  # type: ignore[import-not-found]
+    from claude_agent_sdk import (
         AssistantMessage,
         ClaudeAgentOptions,
         ResultMessage,
@@ -180,11 +414,7 @@ async def _agent_stream(
                     elif isinstance(block, ToolUseBlock):
                         yield _sse(
                             "tool_use",
-                            {
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            },
+                            {"id": block.id, "name": block.name, "input": block.input},
                         )
                     elif isinstance(block, ToolResultBlock):
                         content = block.content
@@ -197,40 +427,71 @@ async def _agent_stream(
                             "tool_result",
                             {
                                 "id": block.tool_use_id,
-                                "content": _truncate(content, 1200),
+                                "content": _truncate(content, TOOL_RESULT_TRUNCATE),
                                 "is_error": bool(block.is_error),
                             },
                         )
             elif isinstance(message, ResultMessage):
                 yield _sse(
                     "done",
-                    {
-                        "reason": "stop",
-                        "usage": getattr(message, "usage", None),
-                    },
+                    {"reason": "stop", "usage": getattr(message, "usage", None)},
                 )
                 return
-    except Exception as exc:  # surface SDK-level failures to the UI
+    except Exception as exc:
         yield _sse("error", {"message": str(exc)})
         return
 
     yield _sse("done", {"reason": "stop"})
 
 
-def _agent_sdk_available() -> bool:
-    # The Claude Agent SDK reads `ANTHROPIC_API_KEY`. Accept the shorter
-    # `ANTHROPIC_KEY` alias (used by some adjacent projects) and re-export it
-    # so the SDK subprocess sees the canonical name.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        alias = os.environ.get("ANTHROPIC_KEY")
-        if not alias:
-            return False
-        os.environ["ANTHROPIC_API_KEY"] = alias
+# ─── echo path (no SDK / no key) ───────────────────────────────────────────
+
+
+async def _echo_stream(
+    messages: list[dict[str, Any]],
+) -> AsyncIterator[bytes]:
+    last_user = next(
+        (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+        "(no user message)",
+    )
+    yield _sse(
+        "delta",
+        {
+            "text": (
+                "Chat backend is not configured (no anthropic SDK / "
+                "ANTHROPIC_API_KEY). Echo: "
+                + (last_user if isinstance(last_user, str) else json.dumps(last_user))
+            ),
+        },
+    )
+    yield _sse("done", {"reason": "echo"})
+
+
+# ─── dispatch ─────────────────────────────────────────────────────────────
+
+
+def _direct_available() -> bool:
+    if not _resolve_api_key():
+        return False
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _agent_available() -> bool:
+    if not _resolve_api_key():
+        return False
     try:
         import claude_agent_sdk  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+ChatMode = Literal["direct", "agent"]
+DEFAULT_CHAT_MODEL = "claude-haiku-4-5"
 
 
 async def stream_chat(
@@ -239,6 +500,8 @@ async def stream_chat(
     duckdb_connection: duckdb.DuckDBPyConnection | None,
     table: str,
     mcp_url: str | None,
+    mode: ChatMode = "direct",
+    model: str = DEFAULT_CHAT_MODEL,
 ) -> AsyncIterator[bytes]:
     """Drive a chat turn and yield SSE-encoded events."""
     messages = body.get("messages") or []
@@ -252,28 +515,41 @@ async def stream_chat(
         sample = _sample_rows(duckdb_connection, table, predicate)
         row_count = _row_count(duckdb_connection, table, predicate)
 
+    has_sql_tool = mode == "direct" and duckdb_connection is not None
+
     system_prompt = _build_system_prompt(
         predicate=predicate,
         table=table,
         text_column=text_column,
         row_count=row_count,
         sample=sample,
+        has_sql_tool=has_sql_tool,
     )
 
     yield _sse(
         "context",
-        {"row_count": row_count, "predicate": predicate, "sample_size": len(sample)},
+        {
+            "row_count": row_count,
+            "predicate": predicate,
+            "sample_size": len(sample),
+            "mode": mode,
+            "model": model,
+        },
     )
 
-    if _agent_sdk_available():
+    if mode == "direct" and _direct_available():
+        async for chunk in _direct_stream(
+            messages,
+            system_prompt,
+            model=model,
+            duckdb_connection=duckdb_connection,
+            table=table,
+            predicate=predicate,
+        ):
+            yield chunk
+    elif mode == "agent" and _agent_available():
         async for chunk in _agent_stream(messages, system_prompt, mcp_url=mcp_url):
             yield chunk
     else:
-        async for chunk in _echo_stream(messages, system_prompt):
+        async for chunk in _echo_stream(messages):
             yield chunk
-
-
-# Predicates from the frontend look like: x = 1 AND y = 'foo'
-# We sanitize them in _looks_safe_predicate, but expose the regex used to
-# detect SQL injection attempts for unit tests.
-_PREDICATE_INJECTION = re.compile(r";")

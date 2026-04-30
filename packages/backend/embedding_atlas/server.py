@@ -26,6 +26,8 @@ def make_server(
     static_path: str,
     mcp: bool = False,
     chat: bool = False,
+    chat_mode: str = "direct",
+    chat_model: str = "claude-haiku-4-5",
     cors: bool | list[str] = False,
     duckdb_uri: str | None = None,
 ):
@@ -218,6 +220,8 @@ def make_server(
                     duckdb_connection=chat_connection,
                     table="dataset",
                     mcp_url=mcp_url,
+                    mode=chat_mode,  # type: ignore[arg-type]
+                    model=chat_model,
                 ):
                     yield chunk
 

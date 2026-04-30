@@ -345,7 +345,24 @@ def import_modules(names: list[str]):
     "--chat/--no-chat",
     "enable_chat",
     default=False,
-    help="Enable the selection-aware chat endpoint at /data/chat. Requires the optional `claude-agent-sdk` dependency and ANTHROPIC_API_KEY for live responses; falls back to an echo stream otherwise.",
+    help="Enable the selection-aware chat endpoint at /data/chat. Requires the optional `[chat]` extra and ANTHROPIC_API_KEY (or ANTHROPIC_KEY) for live responses; falls back to an echo stream otherwise.",
+)
+@click.option(
+    "--chat-mode",
+    type=click.Choice(["direct", "agent"]),
+    default="direct",
+    help=(
+        "Chat backend mode. `direct` (default) calls the Anthropic Messages API "
+        "with token streaming and a single run_sql_query tool — fast, ~2s first "
+        "token. `agent` shells out to the Claude Agent SDK and inherits the full "
+        "viewer MCP tool surface — slower (~10–15s first turn) but can drive UI."
+    ),
+)
+@click.option(
+    "--chat-model",
+    type=str,
+    default="claude-haiku-4-5",
+    help="Anthropic model to use in `direct` chat mode (ignored in `agent` mode).",
 )
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(
@@ -388,6 +405,8 @@ def main(
     labels: str | None,
     enable_mcp: bool,
     enable_chat: bool,
+    chat_mode: str,
+    chat_model: str,
 ):
     apply_logging_config()
 
@@ -559,6 +578,8 @@ def main(
         duckdb_uri=duckdb,
         mcp=enable_mcp,
         chat=enable_chat,
+        chat_mode=chat_mode,
+        chat_model=chat_model,
         cors=cors_config,
     )
 
@@ -591,8 +612,14 @@ def main(
         print(click.style("  ➜ MCP server: use --mcp to enable", dim=True))
     if enable_chat:
         chat_url = click.style(f"http://{host}:{new_port}/data/chat", fg="blue")
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            print(f"  ➜ Chat: {chat_url}")
+        has_key = bool(
+            os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_KEY")
+        )
+        mode_hint = f"mode={chat_mode}" + (
+            f", model={chat_model}" if chat_mode == "direct" else ""
+        )
+        if has_key:
+            print(f"  ➜ Chat: {chat_url}  " + click.style(f"({mode_hint})", dim=True))
         else:
             print(
                 f"  ➜ Chat: {chat_url} "

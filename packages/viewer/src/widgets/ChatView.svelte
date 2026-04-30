@@ -132,8 +132,8 @@
   });
 </script>
 
-<div class="flex flex-col h-full">
-  <div bind:this={scroller} class="flex-1 overflow-auto px-4 py-3 space-y-4 text-sm">
+<div class="flex flex-col h-full min-h-0">
+  <div bind:this={scroller} class="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4 text-sm">
     {#if turns.length === 0}
       <div class="text-slate-500 dark:text-slate-400">
         Ask Claude about the rows you have selected. The agent has access to <code>run_sql_query</code>

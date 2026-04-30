@@ -48,8 +48,13 @@
     }}
     onkeydown={onPaletteKeydown}
   >
+    <!-- Use fixed `height` (not `max-height`) so the modal always claims its
+         full slot. With `max-height` the overlay's align-items: start lets
+         the modal shrink to content height, which collapses the flex chain
+         and breaks scrolling inside Command.Root. -->
     <div
       class="w-full max-w-2xl mx-4 rounded-lg shadow-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col"
+      style:height="70vh"
       style:max-height="70vh"
     >
       <Command.Root class="flex flex-col h-full text-slate-800 dark:text-slate-200" shouldFilter={true}>

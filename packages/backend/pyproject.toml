@@ -36,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 chat = [
+  "anthropic>=0.40.0",
   "claude-agent-sdk>=0.0.5",
 ]
 
