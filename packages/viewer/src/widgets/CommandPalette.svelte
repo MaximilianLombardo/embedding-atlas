@@ -1,24 +1,24 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  // The command palette opens above the rest of the viewer when the user presses
-  // ⌘K. For now it is a chat-only surface; the cmdk-sv list structure is kept so
-  // synchronous commands (toggle layout, export, run SQL, …) can be appended
-  // later as plain `<Command.Item>` children.
+  // The command palette opens above the rest of the viewer when the user
+  // presses ⌘K. The body is the command list — chat lives in the tab next
+  // to the table, not here. See `commands/builtin.ts` for the registry.
   import { Command } from "cmdk-sv";
   import { type Snippet } from "svelte";
 
   import { IconClose } from "../assets/icons.js";
 
+  import { groupCommands, type Command as ViewerCommand } from "../commands/builtin.js";
+
   interface Props {
     open: boolean;
     onClose: () => void;
+    commands: ViewerCommand[];
     /** Right-aligned status snippet (row count, predicate, MCP indicator). */
     statusBar?: Snippet;
-    /** Body content; rendered below the input and replaces the empty list. */
-    body?: Snippet<[{ query: string }]>;
   }
 
-  let { open = $bindable(), onClose, statusBar, body }: Props = $props();
+  let { open = $bindable(), onClose, commands, statusBar }: Props = $props();
 
   let query = $state("");
 
@@ -30,7 +30,13 @@
     }
   }
 
-  // Reset the query when the palette is closed so the next open is fresh.
+  async function runCommand(cmd: ViewerCommand) {
+    onClose();
+    await cmd.run();
+  }
+
+  let groups = $derived(groupCommands(commands));
+
   $effect(() => {
     if (!open) {
       query = "";
@@ -48,21 +54,16 @@
     }}
     onkeydown={onPaletteKeydown}
   >
-    <!-- Use fixed `height` (not `max-height`) so the modal always claims its
-         full slot. With `max-height` the overlay's align-items: start lets
-         the modal shrink to content height, which collapses the flex chain
-         and breaks scrolling inside Command.Root. -->
     <div
       class="w-full max-w-2xl mx-4 rounded-lg shadow-2xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 overflow-hidden flex flex-col"
-      style:height="70vh"
-      style:max-height="70vh"
+      style:max-height="60vh"
     >
-      <Command.Root class="flex flex-col h-full text-slate-800 dark:text-slate-200" shouldFilter={true}>
+      <Command.Root class="flex flex-col text-slate-800 dark:text-slate-200" shouldFilter={true} loop={true}>
         <div class="flex items-center gap-2 px-3 border-b border-slate-200 dark:border-slate-700">
           <span class="text-slate-400 dark:text-slate-500 select-none">›</span>
           <Command.Input
             bind:value={query}
-            placeholder="Ask Claude about your selection, or type a command…"
+            placeholder="Type a command…"
             class="flex-1 py-3 bg-transparent outline-none text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
             autofocus
           />
@@ -80,19 +81,30 @@
           </button>
         </div>
 
-        <!-- min-h-0 unblocks the flex chain so the body's own overflow-auto
-             actually scrolls instead of pushing the modal taller. -->
-        <div class="flex-1 min-h-0 flex flex-col">
-          {#if body}
-            {@render body({ query })}
-          {:else}
-            <Command.List class="overflow-auto">
-              <Command.Empty class="px-3 py-6 text-sm text-slate-500 dark:text-slate-400">
-                No commands available yet.
-              </Command.Empty>
-            </Command.List>
-          {/if}
-        </div>
+        <Command.List class="overflow-auto flex-1 min-h-0 py-1">
+          <Command.Empty class="px-3 py-6 text-sm text-slate-500 dark:text-slate-400"
+            >No matching commands.</Command.Empty
+          >
+          {#each groups as { group, items } (group)}
+            <Command.Group heading={group} class="px-1 py-1">
+              <div class="px-2 py-1 text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500 select-none">
+                {group}
+              </div>
+              {#each items as cmd (cmd.id)}
+                <Command.Item
+                  value={cmd.label}
+                  onSelect={() => runCommand(cmd)}
+                  class="flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer aria-selected:bg-slate-100 dark:aria-selected:bg-slate-800"
+                >
+                  <span>{cmd.label}</span>
+                  {#if cmd.hint}
+                    <span class="text-xs text-slate-400 dark:text-slate-500">{cmd.hint}</span>
+                  {/if}
+                </Command.Item>
+              {/each}
+            </Command.Group>
+          {/each}
+        </Command.List>
       </Command.Root>
     </div>
   </div>

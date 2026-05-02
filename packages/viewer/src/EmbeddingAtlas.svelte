@@ -13,7 +13,6 @@
   import SearchResultList from "./views/SearchResultList.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
   import Button from "./widgets/Button.svelte";
-  import ChatView from "./widgets/ChatView.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
   import Input from "./widgets/Input.svelte";
   import PopupButton from "./widgets/PopupButton.svelte";
@@ -37,7 +36,9 @@
   import { ChartContextCache, type ChartContext, type ChartDelegate, type RowID } from "./charts/chart.js";
   import { type ChartThemeConfig } from "./charts/common/theme.js";
   import { defaultCharts } from "./charts/default_charts.js";
+  import { buildCommands } from "./commands/builtin.js";
   import { EMBEDDING_ATLAS_VERSION } from "./constants.js";
+  import { type TableTab } from "./layouts/list/types.js";
   import { provideModelContext } from "./model_context/model_context.js";
   import { type ColumnStyle } from "./renderers/types.js";
   import { performSearch, querySearchResultItems, resolveSearcher, type SearchResultItem } from "./search/search.js";
@@ -353,6 +354,25 @@
   let layout = $state.raw<string>("list");
   let layoutStates = $state.raw<Record<string, any>>({});
 
+  let tableTab = $derived((layoutStates.list?.tableTab ?? "table") as TableTab);
+
+  function setTableTab(tab: TableTab) {
+    layoutStates = { ...layoutStates, list: { ...(layoutStates.list ?? {}), tableTab: tab } };
+  }
+
+  let paletteCommands = $derived(
+    buildCommands({
+      layout,
+      setLayout: (l) => (layout = l),
+      isDark: $colorScheme === "dark",
+      toggleDarkMode: () => ($userColorScheme = $colorScheme === "light" ? "dark" : "light"),
+      resetFilter,
+      chatAvailable: chatProvider.endpoint != null,
+      tableTab,
+      setTableTab,
+    }),
+  );
+
   let chartDelegates = new Map<string, Set<ChartDelegate>>();
 
   function registerChartDelegate(id: string, delegate: ChartDelegate): () => void {
@@ -643,12 +663,9 @@
   </div>
 
   {#if initialized}
-    <CommandPalette open={paletteOpen} onClose={() => (paletteOpen = false)}>
+    <CommandPalette open={paletteOpen} onClose={() => (paletteOpen = false)} commands={paletteCommands}>
       {#snippet statusBar()}
         <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
-      {/snippet}
-      {#snippet body()}
-        <ChatView endpoint={chatProvider.endpoint} context={chatProvider.context} bind:turns={chatState.turns} />
       {/snippet}
     </CommandPalette>
   {/if}
