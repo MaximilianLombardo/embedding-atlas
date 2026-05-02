@@ -27,14 +27,24 @@ def test_empty_sample_omits_instruction():
 
 def test_doi_takes_priority():
     prompt = _prompt(
-        [{"doi": "10.1/x", "arxiv_id": "1", "pmid": "2", "url": "http://x", "title": "T"}]
+        [
+            {
+                "doi": "10.1/x",
+                "arxiv_id": "1",
+                "pmid": "2",
+                "url": "http://x",
+                "title": "T",
+            }
+        ]
     )
     assert "https://doi.org/{doi}" in prompt
     assert "scholarly/paper-shaped" in prompt
 
 
 def test_arxiv_when_no_doi():
-    prompt = _prompt([{"arxiv_id": "1234.5678", "pmid": "9", "url": "http://x", "title": "T"}])
+    prompt = _prompt(
+        [{"arxiv_id": "1234.5678", "pmid": "9", "url": "http://x", "title": "T"}]
+    )
     assert "https://arxiv.org/abs/{arxiv_id}" in prompt
 
 

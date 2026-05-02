@@ -125,8 +125,9 @@
   <div bind:this={scroller} class="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4 text-sm">
     {#if turns.length === 0}
       <div class="text-slate-500 dark:text-slate-400">
-        Ask Claude about the rows you have selected. The agent has access to <code>run_sql_query</code>
-        and the rest of the viewer's tool surface, plus a small sample of the selection up front.
+        Ask Claude about the rows you have selected — or about the whole dataset if nothing is selected. The agent has
+        access to <code>run_sql_query</code> and the rest of the viewer's tool surface, plus a small sample of the rows in
+        scope up front.
       </div>
     {/if}
     {#each turns as turn, i (i)}
@@ -191,7 +192,7 @@
         bind:this={textareaEl}
         bind:value={draft}
         onkeydown={onTextareaKeydown}
-        placeholder="Ask about the selection… (Enter to send, Shift+Enter for newline)"
+        placeholder="Ask Claude about the rows in scope… (Enter to send, Shift+Enter for newline)"
         rows="2"
         disabled={pending}
         class="w-full resize-none bg-transparent outline-none px-2 py-1 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 disabled:opacity-50"

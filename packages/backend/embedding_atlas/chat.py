@@ -208,8 +208,7 @@ def _build_system_prompt(
         f"{text_hint}\n\n"
         f"Sample rows from the current selection (truncated): "
         f"{json.dumps(truncated_sample)}\n\n"
-        f"{tool_hint}"
-        + (f"\n\n{citation_hint}" if citation_hint else "")
+        f"{tool_hint}" + (f"\n\n{citation_hint}" if citation_hint else "")
     )
 
 
@@ -217,7 +216,9 @@ def _build_system_prompt(
 
 
 def _sql_tool_definition(table: str, predicate: str | None) -> dict[str, Any]:
-    pred_hint = f" The user's current WHERE predicate is `{predicate}`." if predicate else ""
+    pred_hint = (
+        f" The user's current WHERE predicate is `{predicate}`." if predicate else ""
+    )
     return {
         "name": "run_sql_query",
         "description": (
@@ -225,8 +226,7 @@ def _sql_tool_definition(table: str, predicate: str | None) -> dict[str, Any]:
             "and return rows as JSON. Use this when the sample in the system "
             "prompt is insufficient. Only SELECT statements are accepted; "
             "writes and DDL are blocked. Keep result sets under 100 rows by "
-            "using LIMIT or aggregations."
-            + pred_hint
+            "using LIMIT or aggregations." + pred_hint
         ),
         "input_schema": {
             "type": "object",
