@@ -230,9 +230,9 @@ Steps 3 and 4 are *also* parallelizable (palette refactor + command list constru
 Update as each step completes — mark ✅ and add one-line notes on anything that surprised us.
 
 - [x] **Step 0** — branch `feat/chat-tab-palette-v2` cut from `main`; this plan committed to the repo.
-- [ ] **Step 1** — lift chat `turns` state to `EmbeddingAtlas.svelte`.
-- [ ] **Step 2** — tabbed table section in `ListLayout`.
+- [x] **Step 1** — lift chat `turns` state to `EmbeddingAtlas.svelte`. *(commit `ca16474`)* `ChatTurn`/`ChatToolCall` types moved to `chat_client.ts` for sharing.
+- [x] **Step 2** — tabbed table section in `ListLayout`. *(commit `a786615`)* Used a Svelte context (`utils/chat_context.ts`) to share endpoint + dynamic predicate getter + lifted turns state — cleaner than prop-drilling through generic `LayoutProps`. ChatPanel header runs its own mosaic client for the row-count badge so it tracks the Selection without extra plumbing.
 - [ ] **Step 3** — `CommandPalette` accepts `commands[]`; 4 simple commands wired.
 - [ ] **Step 4** — color-by commands (categorical cols, ≤50 distinct).
-- [ ] **Step 5** — citation system-prompt in `chat.py` *(parallel worktree agent)*.
+- [x] **Step 5** — citation system-prompt in `chat.py` *(parallel worktree agent, commit `1f5321e`)*. Detection in `_build_system_prompt`; new `_citation_instruction` helper picks link template by priority. 8 new tests in `packages/backend/tests/test_chat.py`; full `pytest` green (151 passed).
 - [ ] **Step 6** — polish + verification.
