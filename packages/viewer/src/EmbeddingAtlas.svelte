@@ -45,7 +45,7 @@
   import { type ChatTurn } from "./utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "./utils/chat_context.js";
   import { makeColorSchemeStore } from "./utils/color_scheme.js";
-  import { columnDescriptions, predicateToString, type ColumnDesc } from "./utils/database.js";
+  import { columnDescriptions, distinctCount, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
 
   const searchLimit = 500;
@@ -87,6 +87,9 @@
   }
 
   let columns: ColumnDesc[] = $state.raw([]);
+  // Distinct counts for non-numeric columns; populated lazily after first
+  // paint so the Color group of palette commands can grow in.
+  let columnDistinctCounts = $state.raw<Record<string, number>>({});
 
   // Column styles
   let columnStyles = $state.raw<Record<string, ColumnStyle>>({});
@@ -280,6 +283,22 @@
     }
 
     initialized = true;
+
+    // Compute distinct counts for non-numeric columns in the background so
+    // we can decide which columns belong in the Color group of the palette.
+    // Errors are swallowed per-column — a missing count just hides the row.
+    void (async () => {
+      const targets = columns.filter((c) => c.jsType === "string");
+      const counts: Record<string, number> = {};
+      await Promise.all(
+        targets.map(async (c) => {
+          try {
+            counts[c.name] = await distinctCount(coordinator, data.table, c.name);
+          } catch {}
+        }),
+      );
+      columnDistinctCounts = counts;
+    })();
   });
 
   let paletteOpen = $state(false);
@@ -360,6 +379,26 @@
     layoutStates = { ...layoutStates, list: { ...(layoutStates.list ?? {}), tableTab: tab } };
   }
 
+  let colorCandidates = $derived(
+    columns
+      .filter((c) => c.jsType === "string")
+      .map((c) => c.name)
+      .filter((name) => {
+        const n = columnDistinctCounts[name];
+        return n != null && n >= 2 && n <= 50;
+      }),
+  );
+
+  function colorEmbeddingBy(column: string) {
+    const embId = Object.entries(charts).find(([, spec]: [string, any]) => spec?.type === "embedding")?.[0];
+    if (!embId) return;
+    const current = charts[embId];
+    charts = {
+      ...charts,
+      [embId]: { ...current, data: { ...(current?.data ?? {}), category: column } },
+    };
+  }
+
   let paletteCommands = $derived(
     buildCommands({
       layout,
@@ -370,6 +409,8 @@
       chatAvailable: chatProvider.endpoint != null,
       tableTab,
       setTableTab,
+      colorCandidates,
+      colorBy: colorEmbeddingBy,
     }),
   );
 

@@ -23,6 +23,9 @@ export interface BuildCommandsArgs {
   chatAvailable: boolean;
   tableTab: TableTab;
   setTableTab: (tab: TableTab) => void;
+  /** Categorical column names eligible for the Color group (2 ≤ distinct ≤ 50). */
+  colorCandidates: string[];
+  colorBy: (column: string) => void;
 }
 
 export function buildCommands(args: BuildCommandsArgs): Command[] {
@@ -67,6 +70,15 @@ export function buildCommands(args: BuildCommandsArgs): Command[] {
     group: "Filter",
     run: args.resetFilter,
   });
+
+  for (const column of args.colorCandidates) {
+    cmds.push({
+      id: `color.${column}`,
+      label: `Color embedding by ${column}`,
+      group: "Color",
+      run: () => args.colorBy(column),
+    });
+  }
 
   return cmds;
 }
