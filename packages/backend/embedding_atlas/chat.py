@@ -34,6 +34,18 @@ TOOL_RESULT_TRUNCATE = 8000
 # window if included raw, and they aren't useful for an LLM to read anyway.
 SAMPLE_ARRAY_CUTOFF = 16
 
+CITATION_KEYS = {
+    "doi",
+    "paper_id",
+    "arxiv_id",
+    "pmid",
+    "pmcid",
+    "url",
+    "title",
+    "authors",
+    "year",
+}
+
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
@@ -122,6 +134,33 @@ def _resolve_api_key() -> str | None:
     return None
 
 
+def _citation_instruction(citation_cols: set[str]) -> str:
+    if "doi" in citation_cols:
+        link_template = "[Title](https://doi.org/{doi})"
+        column_hint = "the `doi` column"
+    elif "arxiv_id" in citation_cols:
+        link_template = "[Title](https://arxiv.org/abs/{arxiv_id})"
+        column_hint = "the `arxiv_id` column"
+    elif "pmid" in citation_cols:
+        link_template = "[Title](https://pubmed.ncbi.nlm.nih.gov/{pmid}/)"
+        column_hint = "the `pmid` column"
+    elif "url" in citation_cols:
+        link_template = "[Title]({url})"
+        column_hint = "the `url` column"
+    else:
+        link_template = '**"Title"**'
+        column_hint = "the `title` column (no stable identifier is available)"
+    available = ", ".join(sorted(f"`{c}`" for c in citation_cols))
+    return (
+        "This dataset is scholarly/paper-shaped — the available citation "
+        f"columns are: {available}. When you make a paper-grounded claim, "
+        "cite at least one specific paper from the sample (or from a SQL "
+        "query) that supports it. Use this exact link template, drawing the "
+        f"identifier from {column_hint}: {link_template}. Skip citations on "
+        "purely conversational replies (e.g. 'what columns do you have?')."
+    )
+
+
 def _build_system_prompt(
     predicate: str | None,
     table: str,
@@ -156,6 +195,9 @@ def _build_system_prompt(
         if has_sql_tool
         else ""
     )
+    columns = sample[0].keys() if sample else []
+    citation_cols = {c.lower() for c in columns if c.lower() in CITATION_KEYS}
+    citation_hint = _citation_instruction(citation_cols) if citation_cols else ""
     return (
         "You are an analyst embedded in the Apple Embedding Atlas viewer. "
         "The user is exploring a dataset and may have lassoed a region of the "
@@ -167,6 +209,7 @@ def _build_system_prompt(
         f"Sample rows from the current selection (truncated): "
         f"{json.dumps(truncated_sample)}\n\n"
         f"{tool_hint}"
+        + (f"\n\n{citation_hint}" if citation_hint else "")
     )
 
 
