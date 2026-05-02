@@ -6,31 +6,24 @@
 
   import Spinner from "./Spinner.svelte";
 
-  import { streamChat, type ChatContext, type ChatEvent, type ChatMessage } from "../utils/chat_client.js";
-
-  interface ToolCall {
-    id: string;
-    name: string;
-    input: unknown;
-    result?: string;
-    isError?: boolean;
-  }
-
-  interface Turn {
-    role: "user" | "assistant";
-    text: string;
-    tools: ToolCall[];
-  }
+  import {
+    streamChat,
+    type ChatContext,
+    type ChatEvent,
+    type ChatMessage,
+    type ChatTurn,
+  } from "../utils/chat_client.js";
 
   interface Props {
     endpoint: string | null;
     context: ChatContext;
     initialPrompt?: string | null;
+    /** History; bind from parent so it survives modal/tab close. */
+    turns?: ChatTurn[];
   }
 
-  let { endpoint, context, initialPrompt = null }: Props = $props();
+  let { endpoint, context, initialPrompt = null, turns = $bindable([]) }: Props = $props();
 
-  let turns = $state<Turn[]>([]);
   let pending = $state(false);
   // svelte-ignore state_referenced_locally
   let draft = $state(initialPrompt ?? "");

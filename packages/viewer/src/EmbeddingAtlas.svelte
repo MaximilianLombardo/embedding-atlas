@@ -41,6 +41,7 @@
   import { provideModelContext } from "./model_context/model_context.js";
   import { type ColumnStyle } from "./renderers/types.js";
   import { performSearch, querySearchResultItems, resolveSearcher, type SearchResultItem } from "./search/search.js";
+  import { type ChatTurn } from "./utils/chat_client.js";
   import { makeColorSchemeStore } from "./utils/color_scheme.js";
   import { columnDescriptions, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
@@ -280,6 +281,7 @@
   });
 
   let paletteOpen = $state(false);
+  let chatTurns = $state<ChatTurn[]>([]);
 
   function onWindowKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -637,6 +639,7 @@
             id_column: data.id,
             text_column: data.text ?? null,
           }}
+          bind:turns={chatTurns}
         />
       {/snippet}
     </CommandPalette>

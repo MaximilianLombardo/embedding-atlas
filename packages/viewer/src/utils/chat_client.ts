@@ -24,6 +24,20 @@ export type ChatEvent =
   | { type: "done"; reason?: string }
   | { type: "error"; message: string };
 
+export interface ChatToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+  result?: string;
+  isError?: boolean;
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  text: string;
+  tools: ChatToolCall[];
+}
+
 interface SSERecord {
   event: string;
   data: string;
