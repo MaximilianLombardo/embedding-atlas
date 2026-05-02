@@ -2,7 +2,7 @@
 <script lang="ts">
   import { debounce } from "@embedding-atlas/utils";
   import { Selection } from "@uwdata/mosaic-core";
-  import { onMount } from "svelte";
+  import { onMount, setContext } from "svelte";
   import { writable } from "svelte/store";
   import { scale } from "svelte/transition";
 
@@ -42,6 +42,7 @@
   import { type ColumnStyle } from "./renderers/types.js";
   import { performSearch, querySearchResultItems, resolveSearcher, type SearchResultItem } from "./search/search.js";
   import { type ChatTurn } from "./utils/chat_client.js";
+  import { CHAT_CONTEXT_KEY, type ChatProvider } from "./utils/chat_context.js";
   import { makeColorSchemeStore } from "./utils/color_scheme.js";
   import { columnDescriptions, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
@@ -281,7 +282,23 @@
   });
 
   let paletteOpen = $state(false);
-  let chatTurns = $state<ChatTurn[]>([]);
+  let chatState = $state<{ turns: ChatTurn[] }>({ turns: [] });
+
+  const chatProvider: ChatProvider = {
+    get endpoint() {
+      return chatEndpoint ?? null;
+    },
+    get context() {
+      return {
+        predicate: currentPredicate(),
+        table: data.table,
+        id_column: data.id,
+        text_column: data.text ?? null,
+      };
+    },
+    state: chatState,
+  };
+  setContext(CHAT_CONTEXT_KEY, chatProvider);
 
   function onWindowKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -631,16 +648,7 @@
         <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
       {/snippet}
       {#snippet body()}
-        <ChatView
-          endpoint={chatEndpoint ?? null}
-          context={{
-            predicate: currentPredicate(),
-            table: data.table,
-            id_column: data.id,
-            text_column: data.text ?? null,
-          }}
-          bind:turns={chatTurns}
-        />
+        <ChatView endpoint={chatProvider.endpoint} context={chatProvider.context} bind:turns={chatState.turns} />
       {/snippet}
     </CommandPalette>
   {/if}

@@ -52,11 +52,7 @@
       { role: "user", content: prompt },
     ];
 
-    turns = [
-      ...turns,
-      { role: "user", text: prompt, tools: [] },
-      { role: "assistant", text: "", tools: [] },
-    ];
+    turns = [...turns, { role: "user", text: prompt, tools: [] }, { role: "assistant", text: "", tools: [] }];
     const assistantIdx = turns.length - 1;
     pending = true;
     await scrollToBottom();

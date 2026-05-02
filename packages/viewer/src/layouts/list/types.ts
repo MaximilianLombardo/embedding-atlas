@@ -2,6 +2,8 @@
 
 export type Section = "embedding" | "table" | "chart";
 
+export type TableTab = "table" | "chat";
+
 export interface ListLayoutState {
   showTable?: boolean;
   showEmbedding?: boolean;
@@ -11,4 +13,6 @@ export interface ListLayoutState {
   chartVisibility?: Record<string, boolean>;
 
   placements?: Record<string, Section>;
+
+  tableTab?: TableTab;
 }

@@ -35,16 +35,20 @@
 
 <script lang="ts">
   import { deepMemo } from "@embedding-atlas/utils";
+  import { getContext } from "svelte";
   import { flip } from "svelte/animate";
   import { slide } from "svelte/transition";
 
+  import ChatPanel from "../../widgets/ChatPanel.svelte";
   import ListChartPanel from "./ListChartPanel.svelte";
   import Resizer from "./Resizer.svelte";
+  import TableTabBar from "./TableTabBar.svelte";
 
+  import { CHAT_CONTEXT_KEY, type ChatProvider } from "../../utils/chat_context.js";
   import { findUnusedId } from "../../utils/identifier.js";
   import { reorder } from "../../utils/sort.js";
   import type { LayoutProps } from "../layout.js";
-  import type { ListLayoutState } from "./types.js";
+  import type { ListLayoutState, TableTab } from "./types.js";
 
   let {
     context,
@@ -73,6 +77,15 @@
   let hasEmbedding = $derived(sections.embedding.length > 0 && (layoutState.showEmbedding ?? true));
   let hasTable = $derived(sections.table.length > 0 && (layoutState.showTable ?? true));
   let hasChart = $derived(layoutState.showCharts ?? true);
+
+  // Chat tab is gated on a configured chat backend. Without one, the table
+  // section behaves exactly like before (no tab strip, table fills the slot).
+  const chat = getContext<ChatProvider | undefined>(CHAT_CONTEXT_KEY);
+  let chatAvailable = $derived(chat != null && chat.endpoint != null);
+  let tableTab: TableTab = $derived(layoutState.tableTab ?? "table");
+  function setTableTab(tab: TableTab) {
+    onStateChange({ tableTab: tab });
+  }
 
   function chartWidth(total: number, desiredWidth: number) {
     const gap = 7;
@@ -140,15 +153,28 @@
         {/if}
         {#if hasTable}
           <div
-            class="flex flex-row gap-2 overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
+            class="flex flex-col gap-1 overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
             style:height={hasEmbedding ? `${tableHeight}px` : null}
             transition:slide
           >
-            {#each sections.table as id (id)}
-              <div class="flex-1 overflow-hidden rounded-md">
-                {@render chartView({ id: id, width: "container", height: "container" })}
+            {#if chatAvailable}
+              <div class="flex-none flex items-center gap-2 px-1">
+                <TableTabBar value={tableTab} onChange={setTableTab} />
               </div>
-            {/each}
+            {/if}
+            {#if chatAvailable && tableTab === "chat" && chat != null}
+              <div class="flex-1 overflow-hidden rounded-md min-h-0">
+                <ChatPanel coordinator={context.coordinator} table={context.table} filter={context.filter} />
+              </div>
+            {:else}
+              <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
+                {#each sections.table as id (id)}
+                  <div class="flex-1 overflow-hidden rounded-md">
+                    {@render chartView({ id: id, width: "container", height: "container" })}
+                  </div>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
