@@ -232,7 +232,19 @@ Update as each step completes — mark ✅ and add one-line notes on anything th
 - [x] **Step 0** — branch `feat/chat-tab-palette-v2` cut from `main`; this plan committed to the repo.
 - [x] **Step 1** — lift chat `turns` state to `EmbeddingAtlas.svelte`. *(commit `ca16474`)* `ChatTurn`/`ChatToolCall` types moved to `chat_client.ts` for sharing.
 - [x] **Step 2** — tabbed table section in `ListLayout`. *(commit `a786615`)* Used a Svelte context (`utils/chat_context.ts`) to share endpoint + dynamic predicate getter + lifted turns state — cleaner than prop-drilling through generic `LayoutProps`. ChatPanel header runs its own mosaic client for the row-count badge so it tracks the Selection without extra plumbing.
-- [ ] **Step 3** — `CommandPalette` accepts `commands[]`; 4 simple commands wired.
-- [ ] **Step 4** — color-by commands (categorical cols, ≤50 distinct).
+- [x] **Step 3** — `CommandPalette` accepts `commands[]`; 4 simple commands wired. *(commit `6e399b5`)* `groupCommands()` keeps a stable group order; the `view.chat-tab` command is gated on `chatAvailable && layout === "list"` so it disappears in dashboard mode.
+- [x] **Step 4** — color-by commands (categorical cols, ≤50 distinct). *(commit `dc28c31`)* Distinct counts are computed in a fire-and-forget after `initialized = true` so first paint isn't blocked; the Color group fills in shortly after. Recolor mutates `charts[embId].data.category` through the existing `onChartsChange` plumbing.
 - [x] **Step 5** — citation system-prompt in `chat.py` *(parallel worktree agent, commit `1f5321e`)*. Detection in `_build_system_prompt`; new `_citation_instruction` helper picks link template by priority. 8 new tests in `packages/backend/tests/test_chat.py`; full `pytest` green (151 passed).
-- [ ] **Step 6** — polish + verification.
+- [x] **Step 6** — polish + verification *(commit `6ea7308`)*. Empty-state copy + textarea placeholder updated for the no-selection-allowed case. `npm run check` clean across all workspaces; prettier + ruff clean; `pytest` 151 passed / 21 skipped.
+
+### Manual verification (deferred to user)
+
+End-to-end browser verification against the v1830 dataset still needs to be run by hand:
+
+```sh
+cd packages/backend && uv run embedding-atlas \
+    /Users/mlombardo/Documents/dev/hackathon-2026/data/snapshots/v1830_clustered/atlas.parquet \
+    --chat
+```
+
+Then walk the verification checklist in the section above.
