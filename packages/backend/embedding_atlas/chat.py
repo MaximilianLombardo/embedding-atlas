@@ -18,16 +18,21 @@ Both paths fall back to a deterministic echo stream when neither
 present), so the wire shape can be exercised end-to-end without any LLM.
 """
 
+import asyncio
 import json
 import os
 from typing import Any, AsyncIterator, Literal
 
 import duckdb
 
+from .mcp_bridge import BridgeUnavailable, McpBridgeClient
+
 
 SAMPLE_ROW_LIMIT = 10
 TEXT_PREVIEW_CHARS = 240
-MAX_TOOL_ITERATIONS = 5
+# Bumped from 5 to 10 with the 19-tool MCP surface — compound asks
+# ("recolor and add a histogram and screenshot") burn iterations fast.
+MAX_TOOL_ITERATIONS = 10
 TOOL_RESULT_TRUNCATE = 8000
 # Drop array columns longer than this from the sample. Embedding columns
 # (e.g. 1024-dim vectors) blow up the system prompt past the model's context
@@ -279,14 +284,28 @@ async def _direct_stream(
     duckdb_connection: duckdb.DuckDBPyConnection | None,
     table: str,
     predicate: str | None,
+    mcp_bridge: McpBridgeClient | None = None,
 ) -> AsyncIterator[bytes]:
-    """Anthropic Messages API path with streaming + run_sql_query tool loop."""
+    """Anthropic Messages API path with streaming + tool loop.
+
+    Tool surface depends on what's wired:
+    - With `mcp_bridge`: all 19 viewer tools via the bridge.
+    - Without: a single local `run_sql_query` against `duckdb_connection`.
+    The bridge's tool list already includes its own `run_sql_query`, so we
+    don't double-register when both are available.
+    """
     from anthropic import AsyncAnthropic
 
     client = AsyncAnthropic()
     tools: list[dict[str, Any]] = []
-    if duckdb_connection is not None:
-        tools.append(_sql_tool_definition(table, predicate))
+    if mcp_bridge is not None:
+        try:
+            tools = await mcp_bridge.list_tools()
+        except BridgeUnavailable:
+            # Viewer not connected yet — fall through to local-only.
+            tools = []
+    if not tools and duckdb_connection is not None:
+        tools = [_sql_tool_definition(table, predicate)]
 
     history: list[dict[str, Any]] = [
         {"role": m["role"], "content": m["content"]} for m in messages
@@ -371,45 +390,105 @@ async def _direct_stream(
             yield _sse("done", {"reason": stop_reason or "stop", "usage": usage})
             return
 
-        # Execute tools and emit tool_result events
+        # Execute tool calls concurrently. Each `_dispatch_tool` returns a
+        # (sse_payload, history_entry) pair; we yield SSE in tool_uses order
+        # so the chat UI sees a deterministic sequence.
+        results = await asyncio.gather(
+            *(
+                _dispatch_tool(
+                    use,
+                    bridge=mcp_bridge,
+                    duckdb_connection=duckdb_connection,
+                )
+                for use in tool_uses
+            )
+        )
         tool_results_msg: list[dict[str, Any]] = []
-        for use in tool_uses:
-            if use["name"] == "run_sql_query" and duckdb_connection is not None:
-                sql = use["input"].get("sql", "")
-                content, is_error = _run_sql_tool(duckdb_connection, sql)
-                trimmed = _truncate(content, TOOL_RESULT_TRUNCATE)
-                yield _sse(
-                    "tool_result",
-                    {"id": use["id"], "content": trimmed, "is_error": is_error},
-                )
-                tool_results_msg.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": use["id"],
-                        "content": trimmed,
-                        "is_error": is_error,
-                    }
-                )
-            else:
-                msg = f"Tool `{use['name']}` is not available in direct chat mode."
-                yield _sse(
-                    "tool_result",
-                    {"id": use["id"], "content": msg, "is_error": True},
-                )
-                tool_results_msg.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": use["id"],
-                        "content": msg,
-                        "is_error": True,
-                    }
-                )
+        for sse_payload, history_entry in results:
+            yield _sse("tool_result", sse_payload)
+            tool_results_msg.append(history_entry)
         history.append({"role": "user", "content": tool_results_msg})
 
     yield _sse(
         "error",
         {"message": f"Reached max tool iterations ({MAX_TOOL_ITERATIONS})"},
     )
+
+
+async def _dispatch_tool(
+    use: dict[str, Any],
+    *,
+    bridge: McpBridgeClient | None,
+    duckdb_connection: duckdb.DuckDBPyConnection | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one tool call and return (sse_payload, history_entry).
+
+    Bridge takes precedence when available — the viewer-side tool list
+    already covers `run_sql_query`, so we don't need the local fallback.
+    Without a bridge, fall back to the local DuckDB-backed SQL tool.
+    """
+    name = use["name"]
+    use_id = use["id"]
+    arguments = use.get("input") or {}
+
+    if bridge is not None:
+        result = await bridge.call_tool(name, arguments)
+        content = result["content"]
+        is_error = result["is_error"]
+        sse_content = (
+            content if isinstance(content, str) else _summarize_content_for_sse(content)
+        )
+        return (
+            {"id": use_id, "content": sse_content, "is_error": is_error},
+            {
+                "type": "tool_result",
+                "tool_use_id": use_id,
+                "content": content,
+                "is_error": is_error,
+            },
+        )
+
+    if name == "run_sql_query" and duckdb_connection is not None:
+        sql = arguments.get("sql", "")
+        text, is_error = _run_sql_tool(duckdb_connection, sql)
+        trimmed = _truncate(text, TOOL_RESULT_TRUNCATE)
+        return (
+            {"id": use_id, "content": trimmed, "is_error": is_error},
+            {
+                "type": "tool_result",
+                "tool_use_id": use_id,
+                "content": trimmed,
+                "is_error": is_error,
+            },
+        )
+
+    msg = f"Tool `{name}` is not available in direct chat mode."
+    return (
+        {"id": use_id, "content": msg, "is_error": True},
+        {
+            "type": "tool_result",
+            "tool_use_id": use_id,
+            "content": msg,
+            "is_error": True,
+        },
+    )
+
+
+def _summarize_content_for_sse(content: list[dict[str, Any]]) -> str:
+    """Collapse a list of Anthropic content blocks to a string for the SSE
+    `tool_result` event. The chat UI renders these as text today; image blocks
+    are displayed as a placeholder until inline image rendering lands.
+    """
+    parts: list[str] = []
+    for block in content:
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(block.get("text", ""))
+        elif kind == "image":
+            parts.append("[image returned]")
+        else:
+            parts.append(f"[{kind}]")
+    return "\n".join(p for p in parts if p)
 
 
 # ─── Claude Agent SDK path (full MCP, slower) ──────────────────────────────
@@ -545,6 +624,7 @@ async def stream_chat(
     mcp_url: str | None,
     mode: ChatMode = "direct",
     model: str = DEFAULT_CHAT_MODEL,
+    mcp_bridge: McpBridgeClient | None = None,
 ) -> AsyncIterator[bytes]:
     """Drive a chat turn and yield SSE-encoded events."""
     messages = body.get("messages") or []
@@ -588,6 +668,7 @@ async def stream_chat(
             duckdb_connection=duckdb_connection,
             table=table,
             predicate=predicate,
+            mcp_bridge=mcp_bridge,
         ):
             yield chunk
     elif mode == "agent" and _agent_available():
