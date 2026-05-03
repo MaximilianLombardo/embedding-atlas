@@ -143,10 +143,10 @@ Update as each step completes — mark ✅ and add one-line notes on anything th
 
 - [x] **Step 0** — `feat/chat-tab-palette-v2` pushed to origin.
 - [x] **Step 1** — branch `feat/chat-mcp-bridge` cut from v2; this plan committed in-repo.
-- [ ] **Step 2** — extract `dispatch_mcp_request` in `server.py` (no behavior change).
-- [ ] **Step 3** — build `mcp_bridge.py` with translation helpers + lazy init + cache.
-- [ ] **Step 4** — refactor `_direct_stream` to consume the bridge; image content blocks; `MAX_TOOL_ITERATIONS` 5 → 10.
-- [ ] **Step 5** — wire bridge into `make_server` (gated on `chat && mcp`).
-- [ ] **Step 6** — `tests/test_mcp_bridge.py` with mocked dispatcher.
-- [ ] **Step 7** — manual verification against the v1830 dataset (recolor / screenshot / histogram / layout / multi-turn).
-- [ ] **Step 8** — deploy-readiness doc.
+- [x] **Step 2** — extract `dispatch_mcp_request` in `server.py` *(commit `bd13a84`)*. `make_mcp_proxy` now returns the dispatcher; `/mcp` HTTP route is just one of two callers.
+- [x] **Step 3** — build `mcp_bridge.py` with translation helpers + lazy init + cache *(commit `481ab7b`)*. ~210 lines including docstrings; no third-party MCP package needed.
+- [x] **Step 4** — refactor `_direct_stream` to consume the bridge *(commit `80d955e`)*. Image content passed to Anthropic as content blocks (model "sees" screenshots); SSE keeps a string for the chat UI's existing renderer with `[image returned]` placeholder. `MAX_TOOL_ITERATIONS` 5 → 10. Concurrent tool calls fan out via `asyncio.gather`.
+- [x] **Step 5** — wire bridge into `make_server` (gated on `chat && mcp`) *(commit `1db83a4`)*. With just `--chat`, today's behavior is preserved (local `run_sql_query` only).
+- [x] **Step 6** — `tests/test_mcp_bridge.py` with mocked dispatcher *(commit `06f477c`)*. 15 new tests; backend pytest 166 passed / 21 skipped (was 151 / 21).
+- [ ] **Step 7** — manual verification against the v1830 dataset (recolor / screenshot / histogram / layout / multi-turn). *In progress — server restarted on port 5056, awaiting user-driven validation.*
+- [x] **Step 8** — deploy-readiness doc *(`ideas/chat-mcp-bridge-deploy.md`)* listing the 7 items that need to land before this is safe for multi-user org deployment.
