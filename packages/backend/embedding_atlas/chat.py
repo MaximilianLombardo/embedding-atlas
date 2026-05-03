@@ -208,6 +208,16 @@ def _build_system_prompt(
         "The user is exploring a dataset and may have lassoed a region of the "
         "embedding space. Be concise; favor concrete claims grounded in the "
         "rows you can see.\n\n"
+        "CRITICAL — when the user asks for any change to the viewer (recolor, "
+        "resize, switch layout, add/delete charts, change column styles, etc.), "
+        "you MUST call the appropriate tool to make the change. Never describe "
+        "a change in prose without actually calling the tool. Only confirm a "
+        "change to the user after a tool has returned 'success'. If a tool "
+        "returns an error, or you did not call any tool, say so explicitly — "
+        "never claim a change was made when it was not. Saying 'I updated the "
+        "chart' when no tool was called is a critical failure that confuses "
+        "the user; if you catch yourself about to do this, stop and call the "
+        "tool first.\n\n"
         f"Current selection: {selection_clause}.\n"
         f"{count_clause}\n"
         f"{text_hint}\n\n"
@@ -613,7 +623,11 @@ def _agent_available() -> bool:
 
 
 ChatMode = Literal["direct", "agent"]
-DEFAULT_CHAT_MODEL = "claude-haiku-4-5"
+# Opus is the default for chat: tool-call fidelity matters more than per-turn
+# cost given the bridge exposes 19 state-mutation tools where confabulation
+# (claiming a change without calling the tool) confuses users. See
+# ideas/mcp-llm-readiness.md for the rationale. Override via --chat-model.
+DEFAULT_CHAT_MODEL = "claude-opus-4-7"
 
 
 async def stream_chat(

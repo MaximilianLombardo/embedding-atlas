@@ -361,8 +361,10 @@ def import_modules(names: list[str]):
 @click.option(
     "--chat-model",
     type=str,
-    default="claude-haiku-4-5",
-    help="Anthropic model to use in `direct` chat mode (ignored in `agent` mode).",
+    default="claude-opus-4-7",
+    help="Anthropic model to use in `direct` chat mode (ignored in `agent` mode). "
+    "Default is Opus 4.7 for tool-call fidelity; use claude-haiku-4-5 if cost or "
+    "latency matters more than reliability.",
 )
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(

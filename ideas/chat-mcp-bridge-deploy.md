@@ -47,7 +47,19 @@ The `feat/chat-mcp-bridge` branch ships the in-process MCP bridge for direct cha
 
 **Acceptance.** Killing the viewer's WebSocket and immediately reconnecting it lets the chat continue without a page reload.
 
-## 5. Frontend rendering of image tool results
+## 5. User-visible model switcher
+
+**Problem.** Chat model is fixed at server-launch time via `--chat-model` (default `claude-opus-4-7`). Users can't trade off cost vs. reliability themselves — power users might want Haiku for fast iteration; demos might want Opus for tool-call fidelity. Today the only knob is the CLI flag.
+
+**Fix sketch.**
+- Add a small dropdown in the chat panel header next to the row-count badge: "Model: Opus 4.7 ▼". Options: Opus 4.7, Sonnet 4.6, Haiku 4.5.
+- Persist the choice in `chatState` so it survives tab switches.
+- The chat backend already accepts `model` per request (the SSE `context` event echoes it), so frontend just needs to thread the choice through `streamChat`'s body.
+- Server-side, validate the model name against an allowlist before passing to Anthropic (avoid arbitrary header injection).
+
+**Acceptance.** A user can switch models mid-session, see token usage roughly halve when they pick a smaller model, and the chosen model survives a tab switch.
+
+## 6. Frontend rendering of image tool results
 
 **Problem.** Image tool results (`get_chart_screenshot`, `get_full_screenshot`) are sent to Anthropic so the model "sees" them, but the chat panel only shows `[image returned]` — users can't see what the model is reasoning about.
 
@@ -58,7 +70,7 @@ The `feat/chat-mcp-bridge` branch ships the in-process MCP bridge for direct cha
 
 **Acceptance.** Asking for a screenshot in chat shows the screenshot inline.
 
-## 6. Deprecate `agent` mode
+## 7. Deprecate `agent` mode
 
 **Problem.** Two chat modes coexist; `agent` is now strictly worse on the dimensions users care about (latency, persistence). Keeping it costs maintenance and tooling complexity.
 
@@ -68,7 +80,7 @@ The `feat/chat-mcp-bridge` branch ships the in-process MCP bridge for direct cha
 
 **Acceptance.** `--chat-mode agent` is gone; only the bridge-backed direct path exists.
 
-## 7. Observability
+## 8. Observability
 
 **Problem.** When something goes wrong in the chat → bridge → MCP → viewer chain, debugging requires tailing server logs and `console.log`-ing the viewer.
 
@@ -81,4 +93,4 @@ The `feat/chat-mcp-bridge` branch ships the in-process MCP bridge for direct cha
 
 ## Sequencing recommendation
 
-Items 1 and 2 are gating: don't deploy without them. Items 3 and 4 are necessary for sustained operation but not for a first internal pilot. Items 5, 6, 7 are quality-of-life and can land in any order after the first deployed pilot.
+Items 1 and 2 are gating: don't deploy without them. Items 3 and 4 are necessary for sustained operation but not for a first internal pilot. Items 5–8 are quality-of-life and can land in any order after the first deployed pilot.
