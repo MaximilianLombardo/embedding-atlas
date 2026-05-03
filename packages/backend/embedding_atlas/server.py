@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 from functools import lru_cache
-from typing import Callable
+from typing import Awaitable, Callable
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
@@ -194,8 +194,9 @@ def make_server(
             executor, lambda: handle_selection(data)
         )
 
+    mcp_dispatch: Callable[[dict], Awaitable[dict]] | None = None
     if mcp:
-        make_mcp_proxy(app)
+        mcp_dispatch = make_mcp_proxy(app)
 
     if chat:
         # Reuse the server-mode DuckDB connection for sample rows when available;
@@ -311,7 +312,14 @@ class WebSocketHandler:
             pass
 
 
-def make_mcp_proxy(app: FastAPI):
+def make_mcp_proxy(app: FastAPI) -> Callable[[dict], Awaitable[dict]]:
+    """Mount the MCP WebSocket + HTTP routes and return an in-process dispatcher.
+
+    The returned `dispatch_mcp_request(body)` forwards a JSON-RPC body through
+    the connected viewer WebSocket. It is used by both the `/mcp` HTTP route
+    (for external MCP clients) and the in-process chat bridge (when chat is
+    enabled). Raises HTTPException(503) if no viewer is connected.
+    """
     # Registry to track the last connected WebSocket handler
     last_handler: dict[str, WebSocketHandler | None] = {"handler": None}
 
@@ -333,14 +341,17 @@ def make_mcp_proxy(app: FastAPI):
         if last_handler["handler"] == handler:
             last_handler["handler"] = None
 
-    @app.post("/mcp")
-    async def post_mcp(request: Request):
-        # Check if we have a connected WebSocket handler
+    async def dispatch_mcp_request(body: dict) -> dict:
         handler = last_handler["handler"]
         if handler is None or not handler.is_connected:
             raise HTTPException(status_code=503, detail="No MCP WebSocket connected")
+        return await handler.send_request(body)
 
-        return await handler.send_request(await request.json())
+    @app.post("/mcp")
+    async def post_mcp(request: Request):
+        return await dispatch_mcp_request(await request.json())
+
+    return dispatch_mcp_request
 
 
 def make_duckdb_connection(df):
