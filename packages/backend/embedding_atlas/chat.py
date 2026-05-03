@@ -201,6 +201,15 @@ def _build_system_prompt(
         else ""
     )
     columns = sample[0].keys() if sample else []
+    visible_columns = ", ".join(f"`{c}`" for c in columns)
+    schema_hint = (
+        f"The DuckDB table is named `{table}` (always use `FROM {table}` — "
+        f"never invent other table names like `data`). "
+        f"Visible columns: {visible_columns}. Call `get_data_schema` for "
+        f"full column types if you need them."
+        if visible_columns
+        else f"The DuckDB table is named `{table}`. Always use `FROM {table}`."
+    )
     citation_cols = {c.lower() for c in columns if c.lower() in CITATION_KEYS}
     citation_hint = _citation_instruction(citation_cols) if citation_cols else ""
     return (
@@ -218,6 +227,7 @@ def _build_system_prompt(
         "chart' when no tool was called is a critical failure that confuses "
         "the user; if you catch yourself about to do this, stop and call the "
         "tool first.\n\n"
+        f"{schema_hint}\n\n"
         f"Current selection: {selection_clause}.\n"
         f"{count_clause}\n"
         f"{text_hint}\n\n"
