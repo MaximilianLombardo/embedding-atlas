@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .chat import stream_chat
 from .data_source import DataSource
+from .mcp_bridge import McpBridgeClient
 from .utils import arrow_to_bytes, to_parquet_bytes
 
 
@@ -205,6 +206,14 @@ def make_server(
         if chat_connection is None:
             chat_connection = make_duckdb_connection(data_source.dataset)
 
+        # When MCP is enabled, build an in-process bridge so direct chat mode
+        # gets the full viewer tool surface without spawning a Claude CLI
+        # subprocess. Lazy-initialized — viewer WebSocket may not be connected
+        # at server startup.
+        chat_mcp_bridge = (
+            McpBridgeClient(dispatch=mcp_dispatch) if mcp_dispatch is not None else None
+        )
+
         @app.post("/data/chat")
         async def post_chat(req: Request):
             body = await req.json()
@@ -223,6 +232,7 @@ def make_server(
                     mcp_url=mcp_url,
                     mode=chat_mode,  # type: ignore[arg-type]
                     model=chat_model,
+                    mcp_bridge=chat_mcp_bridge,
                 ):
                     yield chunk
 
