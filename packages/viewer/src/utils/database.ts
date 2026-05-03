@@ -96,6 +96,15 @@ export function jsTypeFromDBType(dbType: string): JSType | null {
     return "Date";
   } else if (dbType.match(/^(VARCHAR|TEXT)\[\d*\]$/)) {
     return "string[]";
+  } else if (dbType.startsWith("ENUM(")) {
+    // ENUM is a typed VARCHAR with a fixed value set; for downstream
+    // categorical coloring / dropdowns it behaves identically to a string.
+    return "string";
+  } else if (dbType === "UUID") {
+    return "string";
+  } else if (dbType.startsWith("DECIMAL(")) {
+    // DECIMAL(p, s) — fixed-point numeric. Treat as number for binning.
+    return "number";
   } else {
     return null;
   }
@@ -120,6 +129,7 @@ const numberTypes = new Set([
   "INT8",
   "LONG",
   "BIGINT",
+  "HUGEINT",
   "UTINYINT",
   "USMALLINT",
   "UINTEGER",
