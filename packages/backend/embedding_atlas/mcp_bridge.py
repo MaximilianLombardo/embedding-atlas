@@ -42,23 +42,24 @@ class McpBridgeClient:
     async def list_tools(self) -> list[dict[str, Any]]:
         """Return the viewer's tools translated to Anthropic format.
 
-        Raises `BridgeUnavailable` when the viewer WebSocket isn't connected.
-        Callers (chat backend) typically fall back to local-only tools.
+        Raises `BridgeUnavailable` when the viewer WebSocket isn't connected
+        (either at initialize or at tools/list time). Callers — typically the
+        chat backend — fall back to local-only tools.
         """
         if self._tools is not None:
             return self._tools
-        await self._ensure_initialized()
-        async with self._lock:
-            if self._tools is not None:
-                return self._tools
-            try:
+        try:
+            await self._ensure_initialized()
+            async with self._lock:
+                if self._tools is not None:
+                    return self._tools
                 result = await self._rpc("tools/list", {})
-            except _Disconnected as exc:
-                self._invalidate_locked()
-                raise BridgeUnavailable("MCP viewer not connected") from exc
-            mcp_tools = result.get("tools") or []
-            self._tools = [_mcp_tool_to_anthropic(t) for t in mcp_tools]
-            return self._tools
+                mcp_tools = result.get("tools") or []
+                self._tools = [_mcp_tool_to_anthropic(t) for t in mcp_tools]
+                return self._tools
+        except _Disconnected as exc:
+            self._invalidate()
+            raise BridgeUnavailable("MCP viewer not connected") from exc
 
     async def call_tool(
         self,
@@ -114,10 +115,6 @@ class McpBridgeClient:
     def _invalidate(self) -> None:
         self._initialized = False
         self._tools = None
-
-    def _invalidate_locked(self) -> None:
-        # Caller holds self._lock.
-        self._invalidate()
 
     async def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         rpc_id = self._next_rpc_id
