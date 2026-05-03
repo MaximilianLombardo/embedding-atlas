@@ -210,6 +210,18 @@ def _build_system_prompt(
         if visible_columns
         else f"The DuckDB table is named `{table}`. Always use `FROM {table}`."
     )
+    filter_hint = (
+        "To filter the whole view to a subset of rows (every chart and the "
+        "Instances table will follow), use the predicates chart — find it "
+        "via `list_charts` looking for `type: 'predicates'` (usually id '2'). "
+        "Two steps: (1) `set_chart_spec` with `spec: { items: [{ name: '<short "
+        "label>', predicate: '<SQL WHERE expression>' }] }` to register a "
+        "named filter (merge-safe: existing items preserved); (2) "
+        "`set_chart_state` with `state: { selection: ['<exact predicate "
+        "string>'] }` to activate it. Multiple selections are OR-joined. "
+        "Clear all active filters with `state: { selection: [] }` on the "
+        "predicates chart."
+    )
     citation_cols = {c.lower() for c in columns if c.lower() in CITATION_KEYS}
     citation_hint = _citation_instruction(citation_cols) if citation_cols else ""
     return (
@@ -233,7 +245,8 @@ def _build_system_prompt(
         f"{text_hint}\n\n"
         f"Sample rows from the current selection (truncated): "
         f"{json.dumps(truncated_sample)}\n\n"
-        f"{tool_hint}" + (f"\n\n{citation_hint}" if citation_hint else "")
+        f"{tool_hint}\n\n"
+        f"{filter_hint}" + (f"\n\n{citation_hint}" if citation_hint else "")
     )
 
 
