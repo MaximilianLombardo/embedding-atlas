@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
+import { mergeUpdates } from "@embedding-atlas/utils";
 import { validate } from "json-schema";
 import type { MCPTool, ModelContextAPI, ToolResponse } from "../app/mcp_server.js";
 import type { ChartContext, ChartDelegate } from "../charts/chart.js";
@@ -78,23 +79,22 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
     },
     {
       name: "set_column_style",
-      description: `Set column style for a given column`,
+      description: `Update specific fields of a column's style. Only fields you explicitly want to change should be included in 'style'; other fields will be preserved. To remove a field, set it to null.`,
       inputSchema: {
         type: "object",
         properties: {
           column: { type: "string" },
           style: {
             type: "object",
-            description: `The column style. Schema: ${JSON.stringify(schemaColumnStyle)}. Use the list_renderers tool to get the list of renderers.`,
+            description: `Patch to apply to the column style. Merged with the existing style. Schema: ${JSON.stringify(schemaColumnStyle)}. Use the list_renderers tool to get the list of renderers.`,
           },
         },
         additionalProperties: false,
       },
       execute: async (params: { column: string; style: any }) => {
-        delegate.columnStyles = {
-          ...delegate.columnStyles,
-          [params.column]: params.style,
-        };
+        const current = delegate.columnStyles[params.column] ?? ({} as ColumnStyle);
+        const merged = mergeUpdates(current, params.style) ?? current;
+        delegate.columnStyles = { ...delegate.columnStyles, [params.column]: merged };
         return textResponse("success");
       },
     },
@@ -155,22 +155,26 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
     },
     {
       name: "set_chart_spec",
-      description: "Update the specification of a chart",
+      description: `Update specific fields of a chart's specification. Only fields you explicitly want to change should be included in 'spec'; other fields (mode, pointSize, title, etc.) will be preserved. To remove a field, set it to null. Example — recolor an embedding by a new column: { id: '1', spec: { data: { category: 'domain' } } }. Do NOT include fields the user did not ask to change.`,
       inputSchema: {
         type: "object",
         properties: {
           id: { type: "string" },
-          spec: { type: "object", description: "The new chart specification, replacing the existing one." },
+          spec: { type: "object", description: "Patch to apply to the chart spec. Merged with the existing spec." },
         },
         additionalProperties: false,
       },
       execute: async (params: { id: string; spec: any }) => {
-        let validateResult = validate(params.spec, schemaBuiltinChartSpec);
+        const current = delegate.charts[params.id] ?? {};
+        const merged = (mergeUpdates(current, params.spec) ?? current) as Record<string, any>;
+        // Validate the merged result so partial patches are still type-checked
+        // against the full chart spec schema.
+        let validateResult = validate(merged, schemaBuiltinChartSpec);
         if (validateResult.valid) {
-          delegate.charts = { ...delegate.charts, [params.id]: params.spec };
+          delegate.charts = { ...delegate.charts, [params.id]: merged };
           return textResponse("success");
         } else {
-          return jsonResponse({ error: "Spec is invalid", details: validateResult.errors });
+          return jsonResponse({ error: "Resulting spec is invalid", details: validateResult.errors });
         }
       },
     },
@@ -190,19 +194,19 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
     },
     {
       name: "set_chart_state",
-      description: `
-          Update the state of a chart. Schema: ${JSON.stringify(schemaBuiltinChartState)}.
-        `,
+      description: `Update specific fields of a chart's state. Only fields you explicitly want to change should be included in 'state'; other fields (viewport, brush, legend selection) will be preserved. To remove a field, set it to null. Schema: ${JSON.stringify(schemaBuiltinChartState)}.`,
       inputSchema: {
         type: "object",
         properties: {
           id: { type: "string" },
-          state: { type: "object", description: "The new chart state, replacing the existing one." },
+          state: { type: "object", description: "Patch to apply to the chart state. Merged with the existing state." },
         },
         additionalProperties: false,
       },
       execute: async (params: { id: string; state: any }) => {
-        delegate.chartStates = { ...delegate.chartStates, [params.id]: params.state };
+        const current = delegate.chartStates[params.id] ?? {};
+        const merged = (mergeUpdates(current, params.state) ?? current) as Record<string, any>;
+        delegate.chartStates = { ...delegate.chartStates, [params.id]: merged };
         return textResponse("success");
       },
     },
@@ -301,14 +305,13 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
     },
     {
       name: "set_layout_state",
-      description: "Set the state of the current layout",
+      description: `Update specific fields of the current layout's state. Only fields you explicitly want to change should be included in 'state'; other fields will be preserved. To remove a field, set it to null.`,
       inputSchema: {
         type: "object",
         properties: {
           state: {
             type: "object",
-            description: `
-                The new chart state, replacing the existing one.
+            description: `Patch to apply to the layout state. Merged with the existing state.
                 Schema:
                 - dashboard layout state: ${JSON.stringify(schemaDashboardLayoutState)}
                 - list layout state: ${JSON.stringify(schemaListLayoutState)}
@@ -318,7 +321,9 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
         additionalProperties: false,
       },
       execute: async (params: { state: any }) => {
-        delegate.layoutStates = { ...delegate.layoutStates, [delegate.layout]: params.state };
+        const current = delegate.layoutStates[delegate.layout] ?? {};
+        const merged = (mergeUpdates(current, params.state) ?? current) as Record<string, any>;
+        delegate.layoutStates = { ...delegate.layoutStates, [delegate.layout]: merged };
         return textResponse("success");
       },
     },
