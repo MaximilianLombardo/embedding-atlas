@@ -7,12 +7,13 @@
   interface Props {
     value: Rectangle;
     onChange: (value: Rectangle) => void;
+    onCommit?: (value: Rectangle) => void;
     pointLocation: (x: number, y: number) => Point;
     coordinateAtPoint: (x: number, y: number) => Point;
     preventHover: (state: boolean) => void;
   }
 
-  let { value, onChange, pointLocation, coordinateAtPoint, preventHover }: Props = $props();
+  let { value, onChange, onCommit, pointLocation, coordinateAtPoint, preventHover }: Props = $props();
 
   let l1 = $derived(pointLocation(value.xMin, value.yMin));
   let l2 = $derived(pointLocation(value.xMax, value.yMax));
@@ -23,6 +24,7 @@
     return (e1: CursorValue) => {
       preventHover(true);
       let p = [l1.x, l1.y, l2.x, l2.y];
+      let latest: Rectangle = value;
       return {
         move: (e2: CursorValue) => {
           let dx = e2.pageX - e1.pageX;
@@ -30,15 +32,17 @@
           let np = [dx, dy, dx, dy].map((d, i) => p[i] + d * mask[i]);
           let nc1 = coordinateAtPoint(np[0], np[1]);
           let nc2 = coordinateAtPoint(np[2], np[3]);
-          onChange({
+          latest = {
             xMin: Math.min(nc1.x, nc2.x),
             xMax: Math.max(nc1.x, nc2.x),
             yMin: Math.min(nc1.y, nc2.y),
             yMax: Math.max(nc1.y, nc2.y),
-          });
+          };
+          onChange(latest);
         },
         up: () => {
           preventHover(false);
+          onCommit?.(latest);
         },
         cancel: () => {
           preventHover(false);

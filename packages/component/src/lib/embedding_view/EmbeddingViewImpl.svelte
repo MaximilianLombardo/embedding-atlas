@@ -29,6 +29,7 @@
     onTooltip: ((value: Selection | null) => void) | null;
     onSelection: ((value: Selection[] | null) => void) | null;
     onRangeSelection: ((value: Rectangle | Point[] | null) => void) | null;
+    onRangeSelectionCommit: ((value: Rectangle | Point[] | null) => void) | null;
     cache: Cache | null;
   }
 
@@ -155,6 +156,7 @@
     onTooltip = null,
     onSelection = null,
     onRangeSelection = null,
+    onRangeSelectionCommit = null,
     cache = null,
   }: Props<Selection> = $props();
 
@@ -207,6 +209,10 @@
     }
     rangeSelection = newValue;
     onRangeSelection?.(newValue);
+  }
+
+  function commitRangeSelection() {
+    onRangeSelectionCommit?.(rangeSelection);
   }
 
   let clusterLabels: LabelWithPlacement[] = $state([]);
@@ -471,6 +477,7 @@
               yMax: Math.max(l1.y, l2.y),
             });
           },
+          up: () => commitRangeSelection(),
         };
       }
       case "lasso": {
@@ -487,6 +494,7 @@
               setRangeSelection(simplifyPolygon(points, 24));
             }
           },
+          up: () => commitRangeSelection(),
         };
       }
       case "pan": {
@@ -512,6 +520,7 @@
   async function onClick(pointer: CursorValue) {
     if (rangeSelection != null) {
       setRangeSelection(null);
+      commitRangeSelection();
     } else {
       const newSelection = await selectionFromPoint(localCoordinates(pointer));
       if (newSelection == null) {
@@ -833,6 +842,7 @@
         <EditableRectangle
           value={rangeSelection}
           onChange={setRangeSelection}
+          onCommit={() => commitRangeSelection()}
           pointLocation={pointLocation}
           coordinateAtPoint={coordinateAtPoint}
           preventHover={(value) => {
