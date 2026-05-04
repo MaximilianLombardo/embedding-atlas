@@ -18,11 +18,14 @@
   import { initializeDatabase } from "../utils/database.js";
   import { downloadBuffer } from "../utils/download.js";
   import { exportMosaicSelection, type ExportFormat } from "../utils/mosaic_exporter.js";
+  import { installSlowQueryLogger, isProfilingEnabled } from "../utils/profiling.js";
   import { getQueryPayload, setQueryPayload } from "../utils/query_payload.js";
   import { importDataTable } from "./import_data.js";
   import { Logger } from "./logging.js";
+  import ProfilerOverlay from "../widgets/ProfilerOverlay.svelte";
 
   const coordinator = defaultCoordinator();
+  installSlowQueryLogger(coordinator);
   const databaseInitialized = initializeDatabase(coordinator, "wasm", null);
 
   let stage: "load-data" | "columns" | "ready" | "messages" = $state.raw("load-data");
@@ -158,6 +161,10 @@
     downloadBuffer(bytes, name);
   }
 </script>
+
+{#if isProfilingEnabled()}
+  <ProfilerOverlay />
+{/if}
 
 <div class="fixed left-0 right-0 top-0 bottom-0">
   {#if stage == "ready" && props !== undefined}
