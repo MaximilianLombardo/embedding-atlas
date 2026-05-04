@@ -58,6 +58,29 @@
       .trim();
   }
 
+  /**
+   * Open a base64-encoded image in a new tab via a blob URL.
+   *
+   * Direct navigation to `data:` URLs in a new tab is blocked by Chrome,
+   * Safari, and Firefox as a phishing mitigation. `blob:` URLs are not
+   * blocked, so we materialize the bytes into a Blob and open that.
+   * The blob URL is auto-revoked after 60s — long enough for the user to
+   * view, short enough to avoid leaking memory across many uses.
+   */
+  function openImageInNewTab(mediaType: string, base64Data: string) {
+    try {
+      const binary = atob(base64Data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mediaType });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      console.error("Failed to open image", e);
+    }
+  }
+
   async function scrollToBottom() {
     await tick();
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
@@ -199,18 +222,22 @@
                           class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
                       {/if}
                       {#each images as img, idx (idx)}
-                        <a
-                          href={`data:${img.media_type};base64,${img.data}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <!-- Click handler converts the base64 data URL to a blob URL
+                             before opening — modern browsers (Chrome, Safari, Firefox)
+                             block direct navigation to data: URLs in new tabs as a
+                             phishing mitigation. blob: URLs are allowed. -->
+                        <button
+                          type="button"
+                          class="block p-0 border-0 bg-transparent cursor-zoom-in"
                           title="Open image in new tab"
+                          onclick={() => openImageInNewTab(img.media_type, img.data)}
                         >
                           <img
                             src={`data:${img.media_type};base64,${img.data}`}
                             alt={`Tool result from ${tool.name}`}
                             class="chat-tool-image rounded border border-slate-200 dark:border-slate-700"
                           />
-                        </a>
+                        </button>
                       {/each}
                       {#if !text && images.length === 0}
                         <pre
