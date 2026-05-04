@@ -118,6 +118,21 @@
     let lastQueryOffset = 0;
     let lastQueryPredicate: SQL.FilterExpr | undefined = undefined;
 
+    // Skip-no-op gate (issue #18, follow-up to PR #16's Fix A): cache the
+    // previous Arrow result reference. On filter deselect, Mosaic re-emits
+    // queryResult with the cached result for the (now matching) original
+    // predicate; reassigning `data` would invalidate the keyed {#each} in
+    // Table/Cards and force a full re-render. Reference equality on the
+    // Arrow result is the cheapest gate and matches the strategy used in
+    // EmbeddingViewMosaic.svelte.
+    //
+    // Note: `offsetForId` closes over the *mutable* `lastQueryPredicate`
+    // and `orderByExprs` variables, not snapshot values, so skipping the
+    // `data` reassignment doesn't stale the closure — the existing closure
+    // always reads the current `lastQueryPredicate` when invoked. And on a
+    // cache hit the predicate is by definition equivalent to the prior one.
+    let prevArrowResult: any = undefined;
+
     let clientTotal = makeClient({
       coordinator: context.coordinator,
       selection: context.filter,
@@ -179,6 +194,12 @@
           .offset(offset);
       },
       queryResult: (result: any) => {
+        // See prevArrowResult comment above. Reference equality short-circuit
+        // on cache hits (e.g. filter deselect path).
+        if (result === prevArrowResult) {
+          return;
+        }
+        prevArrowResult = result;
         data = {
           data: result.toArray(),
           columns: columnNames,

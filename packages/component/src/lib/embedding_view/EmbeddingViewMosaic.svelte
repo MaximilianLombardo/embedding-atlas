@@ -79,6 +79,22 @@
     let client: { destroy: () => void } | null = null;
     let didDestroy = false;
 
+    // Skip-no-op gate (issue #18, follow-up to PR #16's Fix A): cache the
+    // previous Arrow result reference. When Mosaic re-emits queryResult with
+    // a cached result for the same predicate (e.g. on filter deselect when
+    // the cleared filter produces the same data), short-circuit before
+    // reallocating typed arrays and triggering the downstream
+    // renderer.setProps -> WebGPU buffer re-upload chain.
+    //
+    // Equality strategy: reference equality on the Arrow result. Mosaic's
+    // coordinator caches query results and returns the same Arrow Table
+    // object for cache hits, so reference equality is sufficient and O(1).
+    // If this turns out to miss cases (e.g. Mosaic produces a new wrapper
+    // per call), upgrade to a content fingerprint or deepEquals on the
+    // produced typed arrays — but reference equality is the cheapest gate
+    // and matches the strategy suggested in the issue.
+    let prevArrowResult: any = undefined;
+
     async function initClient() {
       let source = deps.source;
       let approxDensity = await queryApproximateDensity(deps.coordinator, source);
@@ -105,6 +121,13 @@
             .where(predicate);
         },
         queryResult: (data: any) => {
+          // See prevArrowResult comment above. On cache hits Mosaic re-emits
+          // the same Arrow result reference; skipping here avoids the
+          // toArray() allocations and the reactive cascade that follows.
+          if (data === prevArrowResult) {
+            return;
+          }
+          prevArrowResult = data;
           let xArray = data.getChild("x").toArray();
           let yArray = data.getChild("y").toArray();
           let categoryArray = data.getChild("c")?.toArray() ?? null;
