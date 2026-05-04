@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
 import { mergeUpdates } from "@embedding-atlas/utils";
+import * as SQL from "@uwdata/mosaic-sql";
 import { validate } from "json-schema";
 import type { MCPTool, ModelContextAPI, ToolResponse } from "../app/mcp_server.js";
 import type { ChartContext, ChartDelegate } from "../charts/chart.js";
@@ -15,6 +16,24 @@ import {
 } from "../schemas.js";
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
+
+/** Default name used by apply_filter when the model omits the `name` parameter. */
+const DEFAULT_FILTER_NAME = "Chat Filter";
+
+interface PredicateItem {
+  name: string;
+  predicate: string;
+}
+
+/** Find the id of the singleton SQL Predicates panel chart, or null if none. */
+function findPredicatesChartId(charts: Record<string, any>): string | null {
+  for (const [id, spec] of Object.entries(charts)) {
+    if (spec && (spec as any).type === "predicates") {
+      return id;
+    }
+  }
+  return null;
+}
 
 export interface ModelContextDelegate {
   context: ChartContext;
@@ -325,6 +344,174 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
         const merged = (mergeUpdates(current, params.state) ?? current) as Record<string, any>;
         delegate.layoutStates = { ...delegate.layoutStates, [delegate.layout]: merged };
         return textResponse("success");
+      },
+    },
+    {
+      name: "apply_filter",
+      description: `Scope the global cross-filter to rows matching a SQL boolean predicate. This adds (or updates) a labeled predicate in the SQL Predicates panel and activates it, so every chart wired to the cross-filter (the embedding, histograms, count plots) and the Instances table will scope to matching rows.
+
+This is the ONLY filter tool available to the chat assistant — there is no way to invoke a brush, embedding lasso, or other interactive selection from chat. Use this tool whenever the user asks to "filter to", "show only", "narrow down to", "select", or otherwise restrict the view by a condition expressible as SQL.
+
+The predicate is a DuckDB SQL boolean expression evaluated against the dataset's main table (use get_data_schema first if you are unsure about column names or types). Compound conditions go in a SINGLE predicate string joined with AND / OR — do NOT call apply_filter multiple times to add conditions; the second call will REPLACE the first when 'name' is the same. Examples:
+  - "primary_corpus = 'biorxiv'"
+  - "year > 2020 AND domain = 'protein_design'"
+  - "list_contains(tools_used, 'ESM2') OR list_contains(tools_used, 'AlphaFold')"
+
+The applied filter is VISIBLE to the user as a card in the SQL Predicates panel. The user can edit, toggle off (deactivate), or remove it via the panel UI — so the model and the user share a single, observable filter surface. Do not ask the user to add a predicate manually; just call this tool.
+
+If 'name' is omitted, the predicate is stored under the default name "Chat Filter". Calling apply_filter again with the same name (or with no name) replaces the previous predicate. Pass an explicit 'name' only when you need to keep multiple distinct named filters around (rare; usually omit 'name').
+
+CRITICAL — call this tool every time the user expresses filter intent, even if you think the same filter is already active from an earlier turn. The tool is safe to call repeatedly; applying the same predicate is a no-op visually. Never infer the current filter state from your own previous messages or tool results — the user may have edited or cleared the filter via the UI between turns. If you genuinely need to verify state before proceeding, call get_charts to inspect the predicates panel — but the simpler and correct path is to just call apply_filter and let it replace. Describing a filter without invoking this tool is a confabulation bug; the user has no way to know whether the action took effect.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          predicate: {
+            type: "string",
+            description:
+              "A DuckDB SQL boolean expression that will be applied as a WHERE clause to the cross-filter (e.g., \"year > 2020 AND domain = 'antibody'\"). Combine multiple conditions with AND / OR in a single string.",
+          },
+          name: {
+            type: "string",
+            description:
+              "Optional human-readable label shown on the predicate card. If omitted, the default \"Chat Filter\" is used and successive apply_filter calls overwrite each other.",
+          },
+        },
+        required: ["predicate"],
+        additionalProperties: false,
+      },
+      execute: async (params: { predicate: string; name?: string }) => {
+        const rawPredicate = params?.predicate;
+        if (typeof rawPredicate !== "string") {
+          return textResponse(
+            "apply_filter failed: 'predicate' must be a string containing a DuckDB SQL boolean expression (for example, \"year > 2020\").",
+          );
+        }
+        const predicate = rawPredicate.trim();
+        if (predicate === "") {
+          return textResponse(
+            "apply_filter failed: the predicate is empty. Provide a DuckDB SQL boolean expression such as \"year > 2020\" or \"domain = 'antibody'\". Use get_data_schema to discover available columns.",
+          );
+        }
+        const rawName = typeof params?.name === "string" ? params.name.trim() : "";
+        const name = rawName === "" ? DEFAULT_FILTER_NAME : rawName;
+
+        // Validate the predicate by running a cheap COUNT(*) WHERE <predicate>
+        // against the dataset before mutating chart state. Mirrors the check
+        // that Predicates.svelte performs on user-entered predicates.
+        try {
+          await delegate.context.coordinator.query(
+            SQL.Query.from(delegate.context.table).select({ count: SQL.count() }).where(predicate),
+          );
+        } catch (e: any) {
+          const detail = e?.message ?? e?.toString?.() ?? String(e);
+          return textResponse(
+            `apply_filter failed: the predicate could not be evaluated as a DuckDB SQL boolean expression. Details: ${detail}. Use get_data_schema to confirm column names and types, then retry with a corrected predicate.`,
+          );
+        }
+
+        // Locate (or create) the SQL Predicates singleton chart.
+        let predicatesId = findPredicatesChartId(delegate.charts);
+        if (predicatesId == null) {
+          predicatesId = findUnusedId(delegate.charts);
+          delegate.charts = {
+            ...delegate.charts,
+            [predicatesId]: { type: "predicates", title: "SQL Predicates" },
+          };
+        }
+
+        // Update the items list: replace existing item with same name, otherwise append.
+        const currentSpec = (delegate.charts[predicatesId] ?? {}) as { items?: PredicateItem[] };
+        const currentItems: PredicateItem[] = Array.isArray(currentSpec.items) ? [...currentSpec.items] : [];
+        const existingIdx = currentItems.findIndex((it) => it && it.name === name);
+        const newItem: PredicateItem = { name, predicate };
+        if (existingIdx >= 0) {
+          currentItems[existingIdx] = newItem;
+        } else {
+          currentItems.push(newItem);
+        }
+        delegate.charts = {
+          ...delegate.charts,
+          [predicatesId]: { ...currentSpec, items: currentItems },
+        };
+
+        // Activate this predicate as the panel's selection. Single-slot
+        // semantics: the model expresses compound conditions inline, so we
+        // replace whatever was selected before with just this predicate.
+        const prevState = delegate.chartStates[predicatesId] ?? {};
+        delegate.chartStates = {
+          ...delegate.chartStates,
+          [predicatesId]: { ...prevState, selection: [predicate] },
+        };
+
+        return jsonResponse({
+          success: true,
+          name,
+          predicate,
+          message: "Filter applied. Visible in the SQL Predicates panel.",
+        });
+      },
+    },
+    {
+      name: "clear_filter",
+      description: `Remove a labeled predicate from the SQL Predicates panel and deactivate it from the cross-filter.
+
+If 'name' is omitted, the default-named filter ("Chat Filter") is removed — this is the common case when the chat assistant is undoing its own previous apply_filter call. Pass an explicit 'name' only when you want to remove a specific differently-named predicate the model previously created.
+
+Other independent filter sources (the embedding brush, predicates the user added by hand via the panel UI) are NOT affected. Calling clear_filter when no matching predicate exists is a no-op.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "Optional name of the predicate to remove. If omitted, the default-named \"Chat Filter\" is removed.",
+          },
+        },
+        additionalProperties: false,
+      },
+      execute: async (params: { name?: string }) => {
+        const rawName = typeof params?.name === "string" ? params.name.trim() : "";
+        const name = rawName === "" ? DEFAULT_FILTER_NAME : rawName;
+
+        const predicatesId = findPredicatesChartId(delegate.charts);
+        if (predicatesId == null) {
+          return jsonResponse({
+            success: true,
+            name,
+            message: "No SQL Predicates panel found; nothing to clear.",
+          });
+        }
+
+        const currentSpec = (delegate.charts[predicatesId] ?? {}) as { items?: PredicateItem[] };
+        const currentItems: PredicateItem[] = Array.isArray(currentSpec.items) ? currentSpec.items : [];
+        const target = currentItems.find((it) => it && it.name === name);
+        if (!target) {
+          return jsonResponse({
+            success: true,
+            name,
+            message: `No predicate named "${name}" found; nothing to clear.`,
+          });
+        }
+
+        const newItems = currentItems.filter((it) => it !== target);
+        delegate.charts = {
+          ...delegate.charts,
+          [predicatesId]: { ...currentSpec, items: newItems },
+        };
+
+        const prevState = (delegate.chartStates[predicatesId] ?? {}) as { selection?: string[] };
+        const prevSelection: string[] = Array.isArray(prevState.selection) ? prevState.selection : [];
+        const newSelection = prevSelection.filter((p) => p !== target.predicate);
+        delegate.chartStates = {
+          ...delegate.chartStates,
+          [predicatesId]: { ...prevState, selection: newSelection },
+        };
+
+        return jsonResponse({
+          success: true,
+          name,
+          message: `Filter "${name}" removed from the SQL Predicates panel.`,
+        });
       },
     },
     {
