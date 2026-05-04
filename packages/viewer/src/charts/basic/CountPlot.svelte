@@ -50,7 +50,34 @@
     sumTotal: number;
   }
 
-  let chartData = $state.raw<ChartData | undefined>(undefined);
+  // Split into two reactive sources:
+  //   - unfilteredData: from a no-selection client; cached for the lifetime
+  //     of (coordinator, table, field, order, limit). Recomputes only on
+  //     spec change, never on brush/filter change.
+  //   - filteredData: from a filter-subscribed client; recomputes on every
+  //     committed cross-filter change. Uses WHERE predicate instead of
+  //     SUM((predicate)::INT), so DuckDB can skip-scan non-matching rows.
+  // chartData is $derived by joining them by value. See
+  // ideas/issue-09-brush-perf-plan.md and #9.
+  let unfilteredData = $state.raw<{ items: Item[]; sumTotal: number } | undefined>(undefined);
+  let filteredData = $state.raw<
+    { itemsByValue: Map<string, number>; sumSelected: number; isFiltered: boolean } | undefined
+  >(undefined);
+  let chartData = $derived.by<ChartData | undefined>(() => {
+    if (unfilteredData == null) return undefined;
+    let mapped = unfilteredData.items.map<Item>((item) => ({
+      value: item.value,
+      count: item.count,
+      // When no filter is active, sub-bar mirrors the total bar.
+      countSelected: filteredData?.isFiltered ? (filteredData.itemsByValue.get(item.value) ?? 0) : item.count,
+      special: item.special,
+    }));
+    return {
+      items: mapped,
+      sumTotal: unfilteredData.sumTotal,
+      sumSelected: filteredData?.isFiltered ? filteredData.sumSelected : unfilteredData.sumTotal,
+    };
+  });
   let chartWidth = $state.raw(400);
   let categoryWidth = $derived(spec.categoryWidth ?? 150);
   const labelWidth = 120;
@@ -89,7 +116,7 @@
     }
   }
 
-  function orderExpression(order: CountPlotSpec["order"]): SQL.ExprNode {
+  function orderExpression(order: CountPlotSpec["order"], totalCol: string = "count"): SQL.ExprNode {
     if (order instanceof Array) {
       // Here we just check if the value is in the given list,
       // post-processing code will sort them.
@@ -104,11 +131,118 @@
       case "selected-descending":
         return SQL.desc("countSelected");
       case "total-ascending":
-        return SQL.asc("count");
+        return SQL.asc(totalCol);
       case "total-descending":
       default:
-        return SQL.desc("count");
+        return SQL.desc(totalCol);
     }
+  }
+
+  // Build the SQL query for the unfiltered (cached) client.
+  function unfilteredQuery(table: string, field: SQLField, isListData: boolean, limit: number) {
+    if (!isListData) {
+      let expr = SQL.cast(fieldExpr(field), "TEXT");
+      return SQL.Query.from(table)
+        .select({
+          value: expr,
+          count: SQL.count(),
+          total: SQL.sql`(${SQL.Query.from(table).select({ count: SQL.count() })})`,
+        })
+        .groupby(expr)
+        .orderby(SQL.isNotNull(expr), orderExpression(order), SQL.asc("value"))
+        .limit(limit + 1);
+    }
+    let intermediateTable = "__count_plot_intermediate__";
+    return SQL.Query.with({
+      [intermediateTable]: SQL.Query.from(table).select({
+        value: SQL.sql`UNNEST(${fieldExpr(field)})::TEXT`,
+      }),
+    })
+      .from(intermediateTable)
+      .select({
+        value: "value",
+        count: SQL.count(),
+        total: SQL.sql`(${SQL.Query.from(intermediateTable).select({ count: SQL.count() })})`,
+      })
+      .groupby("value")
+      .orderby(SQL.isNotNull("value"), orderExpression(order), SQL.asc("value"))
+      .limit(limit + 1);
+  }
+
+  // Build the SQL query for the filtered (live) client. Uses WHERE predicate
+  // so DuckDB can skip-scan rows that don't match the cross-filter.
+  function filteredQuery(
+    table: string,
+    field: SQLField,
+    isListData: boolean,
+    limit: number,
+    predicate: SQL.FilterExpr | undefined,
+  ) {
+    if (!isListData) {
+      let expr = SQL.cast(fieldExpr(field), "TEXT");
+      let totalSubquery = SQL.Query.from(table).select({ count: SQL.count() });
+      if (predicate != null) totalSubquery = totalSubquery.where(predicate);
+      let q = SQL.Query.from(table).select({
+        value: expr,
+        countSelected: SQL.count(),
+        totalSelected: SQL.sql`(${totalSubquery})`,
+      });
+      if (predicate != null) q = q.where(predicate);
+      return q
+        .groupby(expr)
+        .orderby(SQL.isNotNull(expr), orderExpression(order, "countSelected"), SQL.asc("value"))
+        .limit(limit + 1);
+    }
+    let intermediateTable = "__count_plot_intermediate__";
+    let intermediate = SQL.Query.from(table).select({
+      value: SQL.sql`UNNEST(${fieldExpr(field)})::TEXT`,
+    });
+    if (predicate != null) intermediate = intermediate.where(predicate);
+    return SQL.Query.with({ [intermediateTable]: intermediate })
+      .from(intermediateTable)
+      .select({
+        value: "value",
+        countSelected: SQL.count(),
+        totalSelected: SQL.sql`(${SQL.Query.from(intermediateTable).select({ count: SQL.count() })})`,
+      })
+      .groupby("value")
+      .orderby(SQL.isNotNull("value"), orderExpression(order, "countSelected"), SQL.asc("value"))
+      .limit(limit + 1);
+  }
+
+  // Process raw rows into the per-item Item list with NULL bucket and
+  // (other) rollup. Shared by both clients; counts are picked off the
+  // appropriate column name via `pluck`.
+  function rowsToItems(
+    rows: any[],
+    pluck: (row: any) => number,
+    grand: number,
+    limit: number,
+  ): { items: Item[]; sum: number } {
+    if (rows.length == 0) return { items: [], sum: 0 };
+    let items: Item[] = [];
+    for (let row of rows) {
+      if (row.value != null && items.length < limit) {
+        items.push({ value: row.value, count: pluck(row) ?? 0, countSelected: 0 });
+      }
+    }
+    if (order instanceof Array) {
+      let sortKey = (item: Item) => {
+        let idx = order.indexOf(item.value);
+        return idx < 0 ? Infinity : idx;
+      };
+      items.sort((a, b) => sortKey(a) - sortKey(b));
+    }
+    for (let row of rows) {
+      if (row.value == null) {
+        items.push({ value: NULL_VALUE, count: pluck(row) ?? 0, countSelected: 0, special: "null" });
+      }
+    }
+    let sumVisible = items.reduce((a, b) => a + b.count, 0);
+    if (sumVisible < grand) {
+      items.push({ value: OTHER_VALUE, count: grand - sumVisible, countSelected: 0, special: "other" });
+    }
+    return { items, sum: grand };
   }
 
   function initializeClient(
@@ -123,116 +257,65 @@
     if (order instanceof Array) {
       limit = Math.max(limit, order.length);
     }
-    let client = makeClient({
+
+    // Client A — unfiltered totals. No selection: never re-fires on brush.
+    let unfilteredClient = makeClient({
+      coordinator: coordinator,
+      query: () => unfilteredQuery(table, field, isListData, limit),
+      queryResult: (result: any) => {
+        let rows: { value: string | null; count: number; total: number }[] = result.toArray();
+        if (rows.length == 0) {
+          unfilteredData = { items: [], sumTotal: 0 };
+          return;
+        }
+        let total = rows[0].total ?? 0;
+        let { items } = rowsToItems(rows, (r) => r.count, total, limit);
+        unfilteredData = { items, sumTotal: total };
+      },
+    });
+
+    // Client B — filtered subcounts. Subscribes to filter Selection.
+    //
+    // When the cross-filter has no clauses (e.g., on cold start), we short-
+    // circuit the query: chartData's $derived already falls back to the
+    // unfiltered counts when filteredData?.isFiltered is false, so running a
+    // WHERE-true scan here would be pure waste. Returns a tiny no-op query
+    // and emits a sentinel filteredData = null on the result.
+    let filteredClient = makeClient({
       coordinator: coordinator,
       selection: filter,
       query: (predicate) => {
-        if (!isListData) {
-          let expr = SQL.cast(fieldExpr(field), "TEXT");
-          return SQL.Query.from(table)
-            .select({
-              value: expr,
-              count: SQL.count(),
-              countSelected: SQL.sum(SQL.cast(filterExprToExpr(predicate), "INT")),
-              total: SQL.sql`(${SQL.Query.from(table).select({ count: SQL.count() })})`,
-              totalSelected: SQL.sql`(${SQL.Query.from(table).select({ count: SQL.count() }).where(predicate)})`,
-            })
-            .groupby(expr)
-            .orderby(
-              SQL.isNotNull(expr), // Make sure the null item is included.
-              orderExpression(order),
-              SQL.asc("value"),
-            )
-            .limit(limit + 1);
-        } else {
-          let intermediateTable = "__count_plot_intermediate__";
-          return SQL.Query.with({
-            // Intermediate table with unnested values
-            [intermediateTable]: SQL.Query.from(table).select({
-              value: SQL.sql`UNNEST(${fieldExpr(field)})::TEXT`,
-              predicate: SQL.cast(filterExprToExpr(predicate), "INT"),
-            }),
-          })
-            .from(intermediateTable)
-            .select({
-              value: "value",
-              count: SQL.count(),
-              countSelected: SQL.sum("predicate"),
-              total: SQL.sql`(${SQL.Query.from(intermediateTable).select({ count: SQL.count() })})`,
-              totalSelected: SQL.sql`(${SQL.Query.from(intermediateTable).select({ count: SQL.sum("predicate") })})`,
-            })
-            .groupby("value")
-            .orderby(
-              SQL.isNotNull("value"), // Make sure the null item is included.
-              orderExpression(order),
-              SQL.asc("value"),
-            )
-            .limit(limit + 1);
+        if (predicate == null) {
+          // No filter: produce zero rows fast. Result handler clears filteredData.
+          return SQL.Query.select({ value: SQL.literal(null), countSelected: SQL.literal(0), totalSelected: SQL.literal(0) }).where(SQL.literal(false));
         }
+        return filteredQuery(table, field, isListData, limit, predicate);
       },
       queryResult: (result: any) => {
-        let rows: {
-          value: string | null;
-          count: number;
-          countSelected: number;
-          total: number;
-          totalSelected: number;
-        }[] = result.toArray();
-
-        if (rows.length == 0) {
-          chartData = undefined;
+        let rows: { value: string | null; countSelected: number; totalSelected: number }[] = result.toArray();
+        let isFiltered = filter.clauses.length > 0;
+        if (!isFiltered) {
+          filteredData = undefined;
           return;
         }
-        let { total, totalSelected } = rows[0];
-        if (total == null) {
-          total = 0;
-        }
-        if (totalSelected == null) {
-          totalSelected = 0;
-        }
-        let data: ChartData = {
-          items: [],
-          sumSelected: totalSelected,
-          sumTotal: total,
-        };
-        for (let row of rows) {
-          if (row.value != null && data.items.length < limit) {
-            data.items.push({
-              value: row.value,
-              count: row.count ?? 0,
-              countSelected: row.countSelected ?? 0,
-            });
-          }
-        }
-        if (order instanceof Array) {
-          let sortKey = (item: Item) => {
-            let idx = order.indexOf(item.value);
-            return idx < 0 ? Infinity : idx;
-          };
-          data.items.sort((a, b) => sortKey(a) - sortKey(b));
-        }
+        let totalSelected = rows[0]?.totalSelected ?? 0;
+        let itemsByValue = new Map<string, number>();
+        let nullCount = 0;
         for (let row of rows) {
           if (row.value == null) {
-            data.items.push({
-              value: NULL_VALUE,
-              count: row.count ?? 0,
-              countSelected: row.countSelected ?? 0,
-              special: "null",
-            });
+            nullCount = row.countSelected ?? 0;
+          } else {
+            itemsByValue.set(row.value, row.countSelected ?? 0);
           }
         }
-        let sumCount = data.items.reduce((a, b) => a + b.count, 0);
-        let sumCountSelected = data.items.reduce((a, b) => a + b.countSelected, 0);
-        if (sumCount < total || sumCountSelected < totalSelected) {
-          data.items.push({
-            value: OTHER_VALUE,
-            count: total - sumCount,
-            countSelected: totalSelected - sumCountSelected,
-            special: "other",
-          });
+        if (nullCount > 0) itemsByValue.set(NULL_VALUE, nullCount);
+        // (other) bucket: filtered total minus visible sum (computed below at join time).
+        let visibleSum = 0;
+        for (let v of itemsByValue.values()) visibleSum += v;
+        if (visibleSum < totalSelected) {
+          itemsByValue.set(OTHER_VALUE, totalSelected - visibleSum);
         }
-
-        chartData = data;
+        filteredData = { itemsByValue, sumSelected: totalSelected, isFiltered };
       },
     });
 
@@ -287,7 +370,7 @@
     $effect.pre(() => {
       let clause: SelectionClause = {
         source: source,
-        clients: new Set([client]),
+        clients: new Set([filteredClient]),
         ...(selection != null && selection.length > 0
           ? { value: selection, predicate: makePredicate(selection) }
           : { value: null, predicate: null }),
@@ -296,10 +379,13 @@
     });
 
     return () => {
-      client.destroy();
+      unfilteredClient.destroy();
+      filteredClient.destroy();
+      unfilteredData = undefined;
+      filteredData = undefined;
       filter.update({
         source: source,
-        clients: new Set([client]),
+        clients: new Set([filteredClient]),
         value: null,
         predicate: null,
       });

@@ -68,6 +68,7 @@
   let effectiveTooltip: DataPoint | null = $state.raw(null);
   let effectiveSelection: DataPoint[] | null = $state.raw(null);
   let effectiveRangeSelection: Rectangle | Point[] | null = $state.raw(null);
+  let committedRangeSelection: Rectangle | Point[] | null = $state.raw(null);
 
   let clientId: any | null = $state.raw(null);
 
@@ -268,7 +269,18 @@
     onSelection?.(value);
   }
 
-  // Range Selection
+  // Range Selection — broadcasts to subscribed Mosaic clients in two phases.
+  //
+  // Phase 1 (hint): `Selection.activate(clause)` fires per-mousemove during a
+  //   drag. Mosaic clients can prefetch query plans, but no broadcast happens
+  //   so subscribed clients do NOT re-query yet.
+  // Phase 2 (commit): `Selection.update(clause)` fires only on mouseup or when
+  //   the brush is cleared. This is the expensive broadcast that triggers
+  //   re-queries across every cross-filtered chart.
+  //
+  // The brush rectangle on the canvas stays live during the drag because it's
+  // driven by `effectiveRangeSelection`, which still updates per-mousemove.
+  // See ideas/issue-09-brush-perf-plan.md and #9.
   $effect(() => {
     let client = clientId;
     if (client == null) {
@@ -279,6 +291,7 @@
       return;
     }
 
+    // Hint: activate-only on every drag step, no broadcast.
     $effect(() => {
       let value = effectiveRangeSelection;
       let source = { x, y };
@@ -288,8 +301,20 @@
         predicate: value != null ? predicateForRangeSelection(source, value) : null,
         value: value,
       };
-      captured.update(clause);
       captured.activate(clause);
+    });
+
+    // Commit: full broadcast on mouseup / clear / programmatic set.
+    $effect(() => {
+      let value = committedRangeSelection;
+      let source = { x, y };
+      let clause = {
+        source: client,
+        clients: new Set<MosaicClient>().add(client),
+        predicate: value != null ? predicateForRangeSelection(source, value) : null,
+        value: value,
+      };
+      captured.update(clause);
     });
 
     return () => {
@@ -302,6 +327,7 @@
     };
   });
 
+  // External rangeSelectionValue prop is treated as a committed change.
   $effect(() => {
     if (
       !deepEquals(
@@ -310,6 +336,7 @@
       )
     ) {
       effectiveRangeSelection = rangeSelectionValue;
+      committedRangeSelection = rangeSelectionValue;
     }
   });
 
@@ -319,6 +346,7 @@
     updateTooltip(null);
     onRangeSelection?.(null);
     effectiveRangeSelection = null;
+    committedRangeSelection = null;
   }
 
   // Point query
@@ -494,6 +522,9 @@
   onRangeSelection={(v) => {
     effectiveRangeSelection = v;
     onRangeSelection?.(v);
+  }}
+  onRangeSelectionCommit={(v) => {
+    committedRangeSelection = v;
   }}
   cache={cache}
 />

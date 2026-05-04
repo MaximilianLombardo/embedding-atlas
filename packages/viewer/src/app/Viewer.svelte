@@ -10,10 +10,13 @@
   import type { EmbeddingAtlasProps, EmbeddingAtlasState } from "../api.js";
   import { systemColorScheme } from "../utils/color_scheme.js";
   import type { ExportFormat } from "../utils/mosaic_exporter.js";
+  import { installSlowQueryLogger, isProfilingEnabled } from "../utils/profiling.js";
   import { getQueryPayload, setQueryPayload } from "../utils/query_payload.js";
   import type { DataSource } from "./data_source.js";
+  import ProfilerOverlay from "../widgets/ProfilerOverlay.svelte";
 
   const coordinator = defaultCoordinator();
+  installSlowQueryLogger(coordinator);
 
   interface Props {
     dataSource: DataSource;
@@ -58,6 +61,10 @@
     setQueryPayload("state", { ...state, predicate: undefined });
   }
 </script>
+
+{#if isProfilingEnabled()}
+  <ProfilerOverlay />
+{/if}
 
 <div class="fixed left-0 right-0 top-0 bottom-0">
   {#if ready && config != null}
