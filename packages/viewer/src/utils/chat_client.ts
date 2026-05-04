@@ -16,11 +16,33 @@ export interface ChatContext {
   row_count?: number | null;
 }
 
+/**
+ * Anthropic-format tool_result content block. Mirrors the subset the backend
+ * forwards in the SSE `tool_result.content_blocks` field. Only `text` and
+ * `image` are handled by the chat UI today; unknown kinds are tolerated for
+ * forward-compat with future backend additions.
+ */
+export type ChatContentBlock =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      source: { type: "base64"; media_type: string; data: string };
+    }
+  | { type: string; [key: string]: unknown };
+
 export type ChatEvent =
   | { type: "context"; row_count: number | null; predicate: string | null; sample_size: number }
   | { type: "delta"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; id: string; content: string; is_error: boolean }
+  | {
+      type: "tool_result";
+      id: string;
+      content: string;
+      // Present when the tool returned structured (non-string) content —
+      // typically a screenshot. Absent for legacy text-only results.
+      content_blocks?: ChatContentBlock[];
+      is_error: boolean;
+    }
   | { type: "done"; reason?: string }
   | { type: "error"; message: string };
 
@@ -29,6 +51,12 @@ export interface ChatToolCall {
   name: string;
   input: unknown;
   result?: string;
+  /**
+   * Structured Anthropic content blocks when the tool returned mixed
+   * text/image content. Absent for text-only results — consumers should
+   * fall back to `result` in that case.
+   */
+  resultBlocks?: ChatContentBlock[];
   isError?: boolean;
 }
 

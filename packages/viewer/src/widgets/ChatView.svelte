@@ -8,6 +8,7 @@
 
   import {
     streamChat,
+    type ChatContentBlock,
     type ChatContext,
     type ChatEvent,
     type ChatMessage,
@@ -32,6 +33,29 @@
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
     return DOMPurify.sanitize(raw);
+  }
+
+  /** Image blocks pulled from a tool_result content list. */
+  function imageBlocks(blocks: ChatContentBlock[] | undefined) {
+    if (!blocks) return [] as Array<{ media_type: string; data: string }>;
+    const out: Array<{ media_type: string; data: string }> = [];
+    for (const b of blocks) {
+      if (b.type === "image" && (b as any).source?.type === "base64") {
+        const src = (b as any).source as { media_type: string; data: string };
+        out.push({ media_type: src.media_type, data: src.data });
+      }
+    }
+    return out;
+  }
+
+  /** Concatenated text blocks from a tool_result content list. */
+  function textFromBlocks(blocks: ChatContentBlock[] | undefined): string {
+    if (!blocks) return "";
+    return blocks
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { text: string }).text || "")
+      .join("\n")
+      .trim();
   }
 
   async function scrollToBottom() {
@@ -86,6 +110,12 @@
         const match = turn.tools.find((t) => t.id === event.id);
         if (match) {
           match.result = event.content;
+          // Structured blocks only arrive when the tool returned non-text
+          // content (typically a screenshot). Older sessions / text-only
+          // results leave this undefined and fall back to `result`.
+          if (event.content_blocks) {
+            match.resultBlocks = event.content_blocks;
+          }
           match.isError = event.is_error;
         }
         break;
@@ -161,8 +191,35 @@
                       2,
                     )}</pre>
                   {#if tool.result !== undefined}
-                    <pre
-                      class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                    {#if tool.resultBlocks}
+                      {@const text = textFromBlocks(tool.resultBlocks)}
+                      {@const images = imageBlocks(tool.resultBlocks)}
+                      {#if text}
+                        <pre
+                          class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
+                      {/if}
+                      {#each images as img, idx (idx)}
+                        <a
+                          href={`data:${img.media_type};base64,${img.data}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open image in new tab"
+                        >
+                          <img
+                            src={`data:${img.media_type};base64,${img.data}`}
+                            alt={`Tool result from ${tool.name}`}
+                            class="chat-tool-image rounded border border-slate-200 dark:border-slate-700"
+                          />
+                        </a>
+                      {/each}
+                      {#if !text && images.length === 0}
+                        <pre
+                          class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[no displayable content]</pre>
+                      {/if}
+                    {:else}
+                      <pre
+                        class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                    {/if}
                   {/if}
                 </div>
               </details>
@@ -200,3 +257,19 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* Cap the inline screenshot at a sane size in the tool-result strip; the
+     anchor wrapping the image opens the full-resolution data URL in a new
+     tab on click (simpler than a lightbox; matches issue #3 acceptance). */
+  .chat-tool-image {
+    display: block;
+    max-width: 400px;
+    max-height: 300px;
+    width: auto;
+    height: auto;
+    margin: 0.25rem 0;
+    object-fit: contain;
+    cursor: zoom-in;
+  }
+</style>
