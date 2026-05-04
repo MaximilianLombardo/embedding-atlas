@@ -359,7 +359,9 @@ The predicate is a DuckDB SQL boolean expression evaluated against the dataset's
 
 The applied filter is VISIBLE to the user as a card in the SQL Predicates panel. The user can edit, toggle off (deactivate), or remove it via the panel UI — so the model and the user share a single, observable filter surface. Do not ask the user to add a predicate manually; just call this tool.
 
-If 'name' is omitted, the predicate is stored under the default name "Chat Filter". Calling apply_filter again with the same name (or with no name) replaces the previous predicate. Pass an explicit 'name' only when you need to keep multiple distinct named filters around (rare; usually omit 'name').`,
+If 'name' is omitted, the predicate is stored under the default name "Chat Filter". Calling apply_filter again with the same name (or with no name) replaces the previous predicate. Pass an explicit 'name' only when you need to keep multiple distinct named filters around (rare; usually omit 'name').
+
+CRITICAL — call this tool every time the user expresses filter intent, even if you think the same filter is already active from an earlier turn. The tool is safe to call repeatedly; applying the same predicate is a no-op visually. Never infer the current filter state from your own previous messages or tool results — the user may have edited or cleared the filter via the UI between turns. If you genuinely need to verify state before proceeding, call get_charts to inspect the predicates panel — but the simpler and correct path is to just call apply_filter and let it replace. Describing a filter without invoking this tool is a confabulation bug; the user has no way to know whether the action took effect.`,
       inputSchema: {
         type: "object",
         properties: {
