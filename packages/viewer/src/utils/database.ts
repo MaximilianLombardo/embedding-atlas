@@ -85,6 +85,38 @@ export async function distinctCount(coordinator: Coordinator, table: string, col
   return r.get(0).count;
 }
 
+/**
+ * Batch version of {@link distinctCount}: computes COUNT(DISTINCT col) for many
+ * columns in a single SQL pass over the table. DuckDB evaluates the
+ * aggregations in one scan, so this is dramatically cheaper than calling
+ * `distinctCount` per column on cold start (where ~20 columns × 50-70ms each
+ * dominates the time-to-first-paint on small datasets, and scales linearly
+ * with row count on large ones).
+ *
+ * Returns a map from input column name to its distinct count. Columns that
+ * fail (e.g. due to a parser quirk on an unusual name) get omitted; the caller
+ * should fall back to a default if a column is missing from the result.
+ */
+export async function distinctCounts(
+  coordinator: Coordinator,
+  table: string,
+  columns: string[],
+): Promise<Record<string, number>> {
+  if (columns.length == 0) return {};
+  const aliases = columns.map((_, i) => `c${i}`);
+  const selects = columns
+    .map((col, i) => `COUNT(DISTINCT ${SQL.column(col)}) AS "${aliases[i]}"`)
+    .join(", ");
+  const result = await coordinator.query(`SELECT ${selects} FROM ${table}`);
+  const row = result.get(0);
+  const out: Record<string, number> = {};
+  for (let i = 0; i < columns.length; i++) {
+    const v = row[aliases[i]];
+    if (v != null) out[columns[i]] = Number(v);
+  }
+  return out;
+}
+
 export type JSType = "string" | "number" | "string[]" | "Date";
 
 export function jsTypeFromDBType(dbType: string): JSType | null {

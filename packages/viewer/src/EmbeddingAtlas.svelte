@@ -45,7 +45,7 @@
   import { type ChatTurn } from "./utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "./utils/chat_context.js";
   import { makeColorSchemeStore } from "./utils/color_scheme.js";
-  import { columnDescriptions, distinctCount, predicateToString, type ColumnDesc } from "./utils/database.js";
+  import { columnDescriptions, distinctCounts, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
 
   const searchLimit = 500;
@@ -286,18 +286,16 @@
 
     // Compute distinct counts for non-numeric columns in the background so
     // we can decide which columns belong in the Color group of the palette.
-    // Errors are swallowed per-column — a missing count just hides the row.
+    // Single batched SQL pass — much cheaper than N parallel queries on
+    // large datasets. Errors fall back to an empty map; missing entries
+    // just hide the corresponding palette row.
     void (async () => {
-      const targets = columns.filter((c) => c.jsType === "string");
-      const counts: Record<string, number> = {};
-      await Promise.all(
-        targets.map(async (c) => {
-          try {
-            counts[c.name] = await distinctCount(coordinator, data.table, c.name);
-          } catch {}
-        }),
-      );
-      columnDistinctCounts = counts;
+      try {
+        const targets = columns.filter((c) => c.jsType === "string").map((c) => c.name);
+        columnDistinctCounts = await distinctCounts(coordinator, data.table, targets);
+      } catch {
+        columnDistinctCounts = {};
+      }
     })();
   });
 

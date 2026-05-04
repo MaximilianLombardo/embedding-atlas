@@ -2,7 +2,7 @@
 
 import type { Coordinator } from "@uwdata/mosaic-core";
 
-import { columnDescriptions, distinctCount } from "../utils/database.js";
+import { columnDescriptions, distinctCounts } from "../utils/database.js";
 import type { BuiltinChartSpec } from "./chart_types.js";
 import type { EmbeddingSpec } from "./embedding/types.js";
 import type { InstancesSpec } from "./instances/types.js";
@@ -77,6 +77,24 @@ export async function defaultCharts(options: {
     charts.push(spec);
   }
 
+  // Pre-collect the columns that need a distinct count (i.e., those that
+  // pass include/exclude/override filters). We then run a single batched
+  // SQL aggregation instead of N sequential per-column queries.
+  let needsCount: typeof columns = [];
+  for (let item of columns) {
+    if (item.jsType == null) continue;
+    if (config.include != undefined && config.include.indexOf(item.name) < 0) continue;
+    if (exclude.indexOf(item.name) >= 0) continue;
+    if (config.override?.[item.name] !== undefined) continue;
+    needsCount.push(item);
+  }
+
+  let countMap = await distinctCounts(
+    coordinator,
+    table,
+    needsCount.map((c) => c.name),
+  );
+
   for (let item of columns) {
     if (item.jsType == null) {
       continue;
@@ -100,7 +118,7 @@ export async function defaultCharts(options: {
       continue;
     }
 
-    let distinct = await distinctCount(coordinator, table, item.name);
+    let distinct = countMap[item.name] ?? 0;
     // Skip the column if there's only a single unique value.
     if (distinct <= 1) {
       continue;
