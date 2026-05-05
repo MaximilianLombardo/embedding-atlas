@@ -77,8 +77,15 @@ export class WindowLoader {
   // Reactive surface — readers track these.
   totalCount = $state<number>(0);
   columns = $state<string[]>([]);
-  /** Index of the first row in the in-memory window. */
-  windowOffset = $state<number>(0);
+  /**
+   * Index of the first row in the in-memory window. Intentionally NOT
+   * a `$state` rune: the *only* reader is `rowAt`, which is called
+   * during virtualizer-driven render, and that already re-runs when
+   * `windowRows` changes (the value that lands AFTER a slide). Making
+   * this reactive caused an effect-update loop because `ensureRange`
+   * reads + writes it from inside the same Svelte effect.
+   */
+  windowOffset = 0;
   /** Rows in the current window, indexed by (absoluteIndex - windowOffset). */
   windowRows = $state<Record<string, any>[]>([]);
   /** True while a slide query is in flight (used for skeleton-row decisions). */
