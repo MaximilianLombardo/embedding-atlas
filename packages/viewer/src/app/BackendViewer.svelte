@@ -6,7 +6,8 @@
 
   let serverUrl = "./data/";
   if (import.meta.env.MODE == "development") {
-    serverUrl = "http://localhost:5055/data/";
+    // Vite proxies /data and /mcp to the backend (see vite.config.js).
+    serverUrl = "/data/";
   }
 
   let dataSource = new BackendDataSource(serverUrl);
