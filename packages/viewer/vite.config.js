@@ -21,12 +21,15 @@ export default defineConfig({
   build: {
     target: "esnext",
     chunkSizeWarningLimit: 4096,
-    sourcemap: true,
   },
   server: {
+    // Proxy /data and /mcp to a running backend so `npm run dev`
+    // works against a real DuckDB+Mosaic stack (port matches the
+    // default the backend lands on; 5056 is the fallback for when
+    // 5055 is in use). Override at run time with `BACKEND_PORT`.
     proxy: {
-      "/data": "http://localhost:5056",
-      "/mcp": "http://localhost:5056",
+      "/data": `http://localhost:${process.env.BACKEND_PORT ?? 5055}`,
+      "/mcp": `http://localhost:${process.env.BACKEND_PORT ?? 5055}`,
     },
   },
 });
