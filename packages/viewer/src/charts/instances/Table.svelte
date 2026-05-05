@@ -50,7 +50,11 @@
     highlight: RowID[] | null;
     sort?: SortOrder;
     onRowClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
-    onRowDoubleClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
+    /**
+     * Fired on row double-click. Receives the full row record so the
+     * detail drawer can render every field without refetching.
+     */
+    onRowDoubleClick: (row: Record<string, any>, event: MouseEvent) => void;
     onSortChange: (sort: SortOrder | undefined) => void;
   }
 
@@ -330,7 +334,7 @@
                 : 'bg-slate-50 dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-blue-950'}"
             style:height="{vRow.size}px"
             onclick={(e) => onRowClick(rowId, e)}
-            ondblclick={(e) => onRowDoubleClick(rowId, e)}
+            ondblclick={(e) => onRowDoubleClick(row, e)}
             onmousedown={(e) => {
               if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault();
             }}

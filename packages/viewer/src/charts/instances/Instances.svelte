@@ -29,6 +29,7 @@
 
   import SegmentedControl from "../../widgets/SegmentedControl.svelte";
   import Cards from "./Cards.svelte";
+  import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
 
@@ -74,8 +75,10 @@
 
   // Detail-drawer state for D3. Populated on row double-click; surfaces
   // a side panel with all fields. Lives here so the drawer survives
-  // table refetches.
-  let detailRowId = $state.raw<RowID | null>(null);
+  // table refetches. We hold the row record itself rather than just an
+  // id — the table already had it on hand at click time, so re-fetching
+  // would be wasted work.
+  let detailRow = $state.raw<Record<string, any> | null>(null);
 
   // Highlight subscription: legacy animateToPoint contract. When a
   // single new id enters the highlight set externally (e.g. an embedding
@@ -227,9 +230,9 @@
     });
   }
 
-  function handleRowDoubleClick(rowId: RowID | null | undefined) {
-    if (rowId == null) return;
-    detailRowId = rowId;
+  function handleRowDoubleClick(row: Record<string, any>) {
+    if (row == null) return;
+    detailRow = row;
   }
 </script>
 
@@ -287,4 +290,11 @@
       </div>
     {/if}
   </div>
+
+  <DetailDrawer
+    row={detailRow}
+    columns={loader?.columns ?? []}
+    columnStyles={columnStyles}
+    onClose={() => (detailRow = null)}
+  />
 </div>
