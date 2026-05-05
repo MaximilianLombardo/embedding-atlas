@@ -270,6 +270,7 @@
           defaultColumnWidths={defaultColumnWidths}
           highlight={$highlight}
           sort={spec.sort}
+          tableName={context.table}
           onRowClick={handleRowClick}
           onRowDoubleClick={handleRowDoubleClick}
           onSortChange={(value) => onSpecChange({ sort: value })}
