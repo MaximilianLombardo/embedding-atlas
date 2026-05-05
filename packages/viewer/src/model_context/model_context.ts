@@ -63,19 +63,28 @@ export function provideModelContext(api: ModelContextAPI, delegate: ModelContext
     },
     {
       name: "run_sql_query",
-      description: "Run a readonly SQL query in DuckDB.",
+      description: `Run a read-only SQL query against the dataset. Returns rows as JSON.
+
+CITATION PILLS — when your query selects per-row data from the main table (rather than aggregates), **always include the row-id column "${delegate.context.id}" in your SELECT clause**. The chat UI uses these IDs to render clickable citation pills under the assistant's reply that let the user reveal the corresponding row in the embedding and the table. Without this column the answer is still valid but the user can't click through to verify.
+
+Examples:
+  ✅ SELECT "${delegate.context.id}", title, year FROM dataset ORDER BY times_cited DESC LIMIT 5
+  ✅ SELECT "${delegate.context.id}", title FROM dataset WHERE domain = 'protein_design'
+  ❌ SELECT title, year FROM dataset ORDER BY times_cited DESC LIMIT 5    (no row id → no pills)
+
+For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are no row IDs to cite — just write the aggregate, no need for "${delegate.context.id}".`,
       inputSchema: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: `The SQL query to run, must be readonly.`,
+            description: `A read-only SELECT or WITH statement. No trailing semicolon, no DDL, no writes. Include "${delegate.context.id}" in row-level SELECTs to enable citation pills.`,
           },
         },
         additionalProperties: false,
       },
       execute: async (params: { query: string }) => {
-        let result = await delegate.context.coordinator.query(params.query);
+        const result = await delegate.context.coordinator.query(params.query);
         return jsonResponse(result.toArray());
       },
     },

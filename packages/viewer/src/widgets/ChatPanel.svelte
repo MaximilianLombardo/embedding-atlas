@@ -3,18 +3,35 @@
   import { Coordinator, makeClient, type Selection } from "@uwdata/mosaic-core";
   import { Query, sql } from "@uwdata/mosaic-sql";
   import { getContext } from "svelte";
+  import type { Writable } from "svelte/store";
 
   import ChatView from "./ChatView.svelte";
 
+  import type { RowID } from "../charts/chart.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../utils/chat_context.js";
 
   interface Props {
     coordinator: Coordinator;
     table: string;
     filter: Selection;
+    /**
+     * Chart-context highlight Writable. Pill clicks on chat citations
+     * write into this; the existing animate-to-point flow + Instances
+     * table reveal pick up the change. Threaded as a prop from
+     * `ListLayout` (rather than via getContext) because the ChartContext
+     * lives in a different scope from the ChatProvider context, and the
+     * caller already has a direct reference.
+     */
+    highlight?: Writable<RowID[] | null>;
   }
 
-  let { coordinator, table, filter }: Props = $props();
+  let { coordinator, table, filter, highlight }: Props = $props();
+
+  function onPillClick(rowId: RowID) {
+    // Replace any existing highlight with just this row. The embedding
+    // view animates to the new point; Instances scrolls to it.
+    highlight?.set([rowId]);
+  }
 
   const chat = getContext<ChatProvider>(CHAT_CONTEXT_KEY);
 
@@ -72,6 +89,6 @@
     </button>
   </div>
   <div class="flex-1 min-h-0">
-    <ChatView endpoint={chat.endpoint} context={chat.context} bind:turns={chat.state.turns} />
+    <ChatView endpoint={chat.endpoint} context={chat.context} bind:turns={chat.state.turns} {onPillClick} />
   </div>
 </div>

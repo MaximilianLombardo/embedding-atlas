@@ -173,6 +173,7 @@ def _build_system_prompt(
     row_count: int | None,
     sample: list[dict[str, Any]],
     has_sql_tool: bool,
+    id_column: str | None = None,
 ) -> str:
     selection_clause = (
         f"WHERE {predicate}" if predicate else "the user has not made a selection"
@@ -191,12 +192,24 @@ def _build_system_prompt(
         {k: _summarize_for_prompt(v) for k, v in row.items()}
         for row in sample[:SAMPLE_ROW_LIMIT]
     ]
+    citation_id_hint = (
+        f"\n\nCITATION PILLS — when your SQL selects per-row data from `{table}` "
+        f"(rather than aggregates), ALWAYS include the row-id column "
+        f"`{id_column}` in your SELECT. The chat UI parses this column out of "
+        "the result and renders clickable citation pills under your reply, so "
+        "the user can verify your claims by clicking through to the actual row "
+        "in the embedding and table. Forgetting this column = no pills appear "
+        "and your answer becomes harder to audit. Aggregate queries (COUNT, "
+        "SUM, GROUP BY without per-row identity) don't need it."
+        if id_column
+        else ""
+    )
     tool_hint = (
         "If the user asks about something the sample doesn't cover, call the "
         "`run_sql_query` tool to inspect more rows. Always scope queries to the "
         "selection by including the WHERE predicate (or by adding "
         "`WHERE <predicate>` if the user has selected something). Keep result "
-        "sets small."
+        "sets small." + citation_id_hint
         if has_sql_tool
         else ""
     )
@@ -328,6 +341,7 @@ async def _direct_stream(
     table: str,
     predicate: str | None,
     mcp_bridge: McpBridgeClient | None = None,
+    id_column: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Anthropic Messages API path with streaming + tool loop.
 
@@ -442,6 +456,7 @@ async def _direct_stream(
                     use,
                     bridge=mcp_bridge,
                     duckdb_connection=duckdb_connection,
+                    id_column=id_column,
                 )
                 for use in tool_uses
             )
@@ -463,12 +478,18 @@ async def _dispatch_tool(
     *,
     bridge: McpBridgeClient | None,
     duckdb_connection: duckdb.DuckDBPyConnection | None,
+    id_column: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one tool call and return (sse_payload, history_entry).
 
     Bridge takes precedence when available — the viewer-side tool list
     already covers `run_sql_query`, so we don't need the local fallback.
     Without a bridge, fall back to the local DuckDB-backed SQL tool.
+
+    When the tool result is a JSON-serialized SQL response that includes
+    the configured ``id_column``, extract the row IDs and surface them on
+    the SSE payload as ``cited_rows`` so the chat UI can render clickable
+    citation pills.
     """
     name = use["name"]
     use_id = use["id"]
@@ -491,6 +512,9 @@ async def _dispatch_tool(
         # Text-only results stay on the legacy `content: string` codepath.
         if not isinstance(content, str):
             sse_payload["content_blocks"] = content
+        cited = _extract_cited_rows(sse_content, id_column) if not is_error else []
+        if cited:
+            sse_payload["cited_rows"] = cited
         return (
             sse_payload,
             {
@@ -505,8 +529,16 @@ async def _dispatch_tool(
         sql = arguments.get("sql", "")
         text, is_error = _run_sql_tool(duckdb_connection, sql)
         trimmed = _truncate(text, TOOL_RESULT_TRUNCATE)
+        sse_payload: dict[str, Any] = {
+            "id": use_id,
+            "content": trimmed,
+            "is_error": is_error,
+        }
+        cited = _extract_cited_rows(trimmed, id_column) if not is_error else []
+        if cited:
+            sse_payload["cited_rows"] = cited
         return (
-            {"id": use_id, "content": trimmed, "is_error": is_error},
+            sse_payload,
             {
                 "type": "tool_result",
                 "tool_use_id": use_id,
@@ -525,6 +557,110 @@ async def _dispatch_tool(
             "is_error": True,
         },
     )
+
+
+CITED_ROWS_CAP = 20
+CITED_LABEL_MAX_LEN = 100
+
+# Columns to prefer as a human-readable label, in order. Matched
+# case-insensitively against keys present in the row dict. If none match,
+# falls back to the first non-id string-valued column.
+_LABEL_COLUMN_PREFERENCE = ("title", "name", "label", "text")
+
+
+def _pick_label_column(row: dict[str, Any], id_column: str | None) -> str | None:
+    """Choose the best column to use as a citation pill label, given a
+    sample row. Preference order: title > name > label > text; otherwise
+    the first non-id key whose value is a non-empty string.
+    """
+    keys_lc = {k.lower(): k for k in row.keys()}
+    for pref in _LABEL_COLUMN_PREFERENCE:
+        if pref in keys_lc:
+            actual = keys_lc[pref]
+            if isinstance(row[actual], str) and row[actual]:
+                return actual
+    for k, v in row.items():
+        if k == id_column:
+            continue
+        if isinstance(v, str) and v:
+            return k
+    return None
+
+
+def _truncate_label(value: Any) -> str | None:
+    """Coerce an arbitrary cell value to a short pill label, or None."""
+    if value is None:
+        return None
+    s = str(value)
+    if not s:
+        return None
+    if len(s) > CITED_LABEL_MAX_LEN:
+        return s[: CITED_LABEL_MAX_LEN - 1] + "…"
+    return s
+
+
+def _extract_cited_rows(content: Any, id_column: str | None) -> list[dict[str, Any]]:
+    """Pull citation entries (id + human-readable label) out of a SQL-style
+    tool result for citation pills.
+
+    Each entry has shape ``{"id": <row_id>, "label": <str | None>}``.
+    The label is picked heuristically from the row dict via
+    ``_pick_label_column`` (title > name > label > text > first string col).
+    Capped at ``CITED_ROWS_CAP`` entries to keep the pill row reasonable.
+
+    Cases covered:
+      - JSON string with ``{"rows": [{...}, ...]}`` (local + bridge SQL tool)
+      - JSON string that is a bare ``[{...}, ...]`` array
+    Cases NOT covered (returning empty):
+      - Tabular plain text (markdown tables, CSV, etc.)
+      - Tool results that wrap rows in an unfamiliar envelope
+      - Results without the ``id_column`` key in the row dicts
+      - Any case where ``id_column`` is unset (chat context omitted it)
+    """
+    if not id_column:
+        return []
+    if not isinstance(content, str) or not content:
+        return []
+    stripped = content.lstrip()
+    if not stripped or stripped[0] not in "[{":
+        return []
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    rows: Any = None
+    if isinstance(parsed, dict):
+        rows = parsed.get("rows")
+    elif isinstance(parsed, list):
+        rows = parsed
+    if not isinstance(rows, list) or not rows:
+        return []
+    if not isinstance(rows[0], dict) or id_column not in rows[0]:
+        return []
+
+    label_col = _pick_label_column(rows[0], id_column)
+
+    out: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for row in rows:
+        if not isinstance(row, dict) or id_column not in row:
+            continue
+        rid = row[id_column]
+        # Hashable check before dedup; fall back to direct append for
+        # unusual id types that shouldn't appear here but we don't want
+        # to crash on.
+        try:
+            if rid in seen:
+                continue
+            seen.add(rid)
+        except TypeError:
+            pass
+        label = _truncate_label(row.get(label_col)) if label_col else None
+        out.append({"id": rid, "label": label})
+        if len(out) >= CITED_ROWS_CAP:
+            break
+    return out
 
 
 def _summarize_content_for_sse(content: list[dict[str, Any]]) -> str:
@@ -688,6 +824,7 @@ async def stream_chat(
     context = body.get("context") or {}
     predicate = context.get("predicate")
     text_column = context.get("text_column")
+    id_column = context.get("id_column")
 
     sample: list[dict[str, Any]] = []
     row_count: int | None = None
@@ -704,6 +841,7 @@ async def stream_chat(
         row_count=row_count,
         sample=sample,
         has_sql_tool=has_sql_tool,
+        id_column=id_column,
     )
 
     yield _sse(
@@ -726,6 +864,7 @@ async def stream_chat(
             table=table,
             predicate=predicate,
             mcp_bridge=mcp_bridge,
+            id_column=id_column,
         ):
             yield chunk
     elif mode == "agent" and _agent_available():
