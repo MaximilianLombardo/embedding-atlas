@@ -168,6 +168,49 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
       },
     },
     {
+      name: "render_chart_in_chat",
+      description: `Render a chart INLINE in the chat conversation as a live, interactive Mosaic chart. The chart appears in the assistant's reply bubble; the user can hover/tooltip and the chart cross-filters with the rest of the dashboard. The chart is ephemeral by default (lives only in the chat history), but the user can click an "Add to panel" affordance on the chart to promote it to a persistent side-panel chart.
+
+When to use:
+  ✅ User asks a visual question best answered with a chart in-line ("show me the distribution of times_cited", "compare paper counts by domain", "what's the histogram of years?"). Use this so the answer is the chart itself.
+  ❌ User asks to add a chart to their dashboard / side panel ("add a histogram of years to my dashboard", "create a chart of …"). For that, use add_chart instead — that tool mutates the side-panel chart list.
+
+The 'spec' argument is the SAME shape add_chart accepts (full BuiltinChartSpec). Schema: ${JSON.stringify(schemaBuiltinChartSpec)}.
+
+Notes:
+  - The data may be very large (>100k points). Prefer specs that aggregate (count-plot, histogram, heatmap) over per-row marks.
+  - Add "filter": "$filter" to layers so the inline chart cross-filters with the rest of the dashboard. Highly recommended.
+  - Do NOT set explicit width/height — the chat UI sizes the chart for the bubble.
+  - On invalid spec the tool returns a textual error; no chart is rendered. Inspect schema and retry.
+  - This tool does NOT add the chart to the side panel (use add_chart for that). The user can promote the inline chart manually if they want to keep it.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          spec: {
+            type: "object",
+            description:
+              "The chart specification. Same shape as add_chart's spec. Prefer aggregating chart types (count-plot, histogram, heatmap). Wire layers to '$filter' so the chart cross-filters with the rest of the dashboard.",
+          },
+        },
+        required: ["spec"],
+        additionalProperties: false,
+      },
+      execute: async (params: { spec: any }) => {
+        const validateResult = validate(params.spec, schemaBuiltinChartSpec);
+        if (!validateResult.valid) {
+          return jsonResponse({
+            error: "Spec is invalid; no chart was rendered.",
+            details: validateResult.errors,
+          });
+        }
+        // Emit a `chart` content block. The backend bridge passes this through
+        // to the SSE stream verbatim (so the chat UI can mount InlineChartView)
+        // and substitutes a text placeholder for the Anthropic tool_result
+        // history (since the API only accepts text/image blocks).
+        return { content: [{ type: "chart", spec: params.spec }] };
+      },
+    },
+    {
       name: "get_chart_spec",
       description: "Get the specification of a chart",
       inputSchema: {

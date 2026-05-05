@@ -499,6 +499,13 @@ async def _dispatch_tool(
         result = await bridge.call_tool(name, arguments)
         content = result["content"]
         is_error = result["is_error"]
+        # The bridge produces a parallel `sse_blocks` list when the tool emitted
+        # viewer-only blocks (e.g. `chart` from `render_chart_in_chat`) that
+        # Anthropic must not see. When present, prefer that for the SSE
+        # forward so the chat UI can render the chart inline; the
+        # Anthropic-safe `content` continues to flow through the message
+        # history.
+        sse_blocks = result.get("sse_blocks")
         sse_content = (
             content if isinstance(content, str) else _summarize_content_for_sse(content)
         )
@@ -507,10 +514,13 @@ async def _dispatch_tool(
             "content": sse_content,
             "is_error": is_error,
         }
-        # When the bridge returned structured blocks (e.g. screenshots), pass
-        # them through verbatim so the chat UI can render image content inline.
-        # Text-only results stay on the legacy `content: string` codepath.
-        if not isinstance(content, str):
+        # When the bridge returned structured blocks (e.g. screenshots,
+        # inline charts), pass them through verbatim so the chat UI can
+        # render the content inline. Text-only results stay on the legacy
+        # `content: string` codepath.
+        if sse_blocks is not None:
+            sse_payload["content_blocks"] = sse_blocks
+        elif not isinstance(content, str):
             sse_payload["content_blocks"] = content
         cited = _extract_cited_rows(sse_content, id_column) if not is_error else []
         if cited:

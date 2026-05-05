@@ -123,6 +123,18 @@
     onChartsChange({ [id]: undefined });
     onChartStatesChange({ [id]: undefined });
   }
+
+  /**
+   * Promote an inline chart from the chat to a persistent side-panel chart.
+   * Triggered by the "Add to panel" button on each InlineChartView. Mirrors
+   * the +Add button behavior: allocate an unused id, slot the spec in, and
+   * push it to the front of the chartsOrder so the user sees it right away.
+   */
+  function saveInlineChartToPanel(spec: any) {
+    let id = findUnusedId(charts);
+    onChartsChange({ [id]: spec });
+    onStateChange({ chartsOrder: [id, ...chartsOrder.filter((x) => x != id)] });
+  }
 </script>
 
 <div class="w-full h-full flex flex-row" bind:clientWidth={containerWidth} bind:clientHeight={containerHeight}>
@@ -169,6 +181,8 @@
                   table={context.table}
                   filter={context.filter}
                   highlight={context.highlight}
+                  chartContext={context}
+                  onSaveChart={saveInlineChartToPanel}
                 />
               </div>
             {:else}

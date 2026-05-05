@@ -71,9 +71,17 @@ class McpBridgeClient:
         """Invoke an MCP tool and return Anthropic-format tool_result content.
 
         Returns a dict shaped like
-            ``{"content": <str | list[content_block]>, "is_error": bool}``
+            ``{"content": <str | list[content_block]>, "is_error": bool,
+              "sse_blocks": <list[content_block] | None>}``
         where ``content_block`` is ``{"type": "text", "text"}`` or
         ``{"type": "image", "source": {"type": "base64", "media_type", "data"}}``.
+
+        ``content`` is always Anthropic-API-safe — only `text` and `image`
+        blocks. ``sse_blocks`` is set when the tool emitted viewer-only blocks
+        (today: ``chart`` from ``render_chart_in_chat``) that the chat UI
+        needs to render but Anthropic must not see. The chat backend forwards
+        ``sse_blocks`` to the SSE stream as ``content_blocks`` and uses
+        ``content`` for the next-turn history sent to the API.
 
         Disconnection during a tool call is converted into an `is_error` result
         so the model can surface the failure naturally instead of crashing the
@@ -90,14 +98,18 @@ class McpBridgeClient:
             return {
                 "content": "Viewer disconnected. Reload the viewer and try again.",
                 "is_error": True,
+                "sse_blocks": None,
             }
         except RuntimeError as exc:
-            return {"content": str(exc), "is_error": True}
+            return {"content": str(exc), "is_error": True, "sse_blocks": None}
         is_error = bool(result.get("isError"))
         content_blocks = result.get("content") or []
+        anthropic_content = _mcp_content_to_anthropic_tool_result(content_blocks)
+        sse_blocks = _mcp_content_to_sse_blocks(content_blocks)
         return {
-            "content": _mcp_content_to_anthropic_tool_result(content_blocks),
+            "content": anthropic_content,
             "is_error": is_error,
+            "sse_blocks": sse_blocks,
         }
 
     async def _ensure_initialized(self) -> None:
@@ -199,8 +211,77 @@ def _mcp_content_to_anthropic_tool_result(
             resource = block.get("resource") or {}
             uri = resource.get("uri") or "<unknown>"
             out.append({"type": "text", "text": f"[resource: {uri}]"})
+        elif kind == "chart":
+            # `chart` blocks come from the viewer's `render_chart_in_chat`
+            # MCP tool. Anthropic's tool_result API only accepts text/image,
+            # so substitute a textual confirmation here. The original chart
+            # spec is preserved separately by `_mcp_content_to_sse_blocks`
+            # and forwarded on the SSE channel for inline rendering in chat.
+            out.append(
+                {
+                    "type": "text",
+                    "text": "[chart rendered inline in chat]",
+                }
+            )
         else:
             out.append({"type": "text", "text": f"[unsupported MCP block: {kind}]"})
     if not has_non_text:
         return "".join(b["text"] for b in out if b["type"] == "text")
+    return out
+
+
+def _mcp_content_to_sse_blocks(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """MCP tool result content → SSE-side content blocks for the chat UI.
+
+    Returns None when the result is purely text (the legacy `content: str`
+    SSE codepath suffices). When any non-text block is present (image,
+    chart, …), returns the full list of blocks normalized to the chat UI's
+    wire format:
+      - `text` and `image` → identical to the Anthropic-format conversion.
+      - `chart` → ``{"type": "chart", "spec": <json>}`` for the UI to mount.
+      - `resource` / unknown → text placeholder (matches Anthropic-side).
+    """
+    out: list[dict[str, Any]] = []
+    has_non_text = False
+    for block in blocks:
+        kind = block.get("type")
+        if kind == "text":
+            out.append({"type": "text", "text": block.get("text") or ""})
+        elif kind == "image":
+            data = block.get("data") or ""
+            mime = block.get("mimeType") or "image/png"
+            if len(data) > MAX_IMAGE_BYTES:
+                # Match the Anthropic-side behavior so the chat UI sees the
+                # same dropped-payload placeholder rather than a broken image.
+                out.append(
+                    {
+                        "type": "text",
+                        "text": f"[image dropped: {len(data) // 1024}KB exceeds cap]",
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": mime, "data": data},
+                    }
+                )
+                has_non_text = True
+        elif kind == "chart":
+            spec = block.get("spec")
+            if spec is not None:
+                out.append({"type": "chart", "spec": spec})
+                has_non_text = True
+            else:
+                out.append({"type": "text", "text": "[chart spec missing]"})
+        elif kind == "resource":
+            resource = block.get("resource") or {}
+            uri = resource.get("uri") or "<unknown>"
+            out.append({"type": "text", "text": f"[resource: {uri}]"})
+        else:
+            out.append({"type": "text", "text": f"[unsupported MCP block: {kind}]"})
+    if not has_non_text:
+        return None
     return out
