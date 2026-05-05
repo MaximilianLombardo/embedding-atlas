@@ -39,6 +39,7 @@
   import type { RowID } from "../chart.js";
   import { inferColumnFormatters } from "./infer_formatters.js";
   import { createSvelteTable } from "./lib/table_core.svelte.js";
+  import { loadStoredWidths, saveStoredWidths } from "./lib/use_column_widths.svelte.js";
   import { WindowLoader } from "./lib/window_loader.svelte.js";
   import type { SortOrder } from "./types.js";
 
@@ -49,6 +50,13 @@
     defaultColumnWidths: Record<string, number>;
     highlight: RowID[] | null;
     sort?: SortOrder;
+    /**
+     * Identifier for the table-being-shown. Used as the key for
+     * localStorage-persisted column widths (D4). Pass the dataset
+     * table name (e.g. `context.table`) so widths survive reloads
+     * but reset cleanly across distinct datasets.
+     */
+    tableName: string;
     onRowClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
     /**
      * Fired on row double-click. Receives the full row record so the
@@ -65,6 +73,7 @@
     defaultColumnWidths,
     highlight,
     sort,
+    tableName,
     onRowClick,
     onRowDoubleClick,
     onSortChange,
@@ -121,15 +130,21 @@
     })),
   );
 
+  // Seed initial column sizing from defaults *and* localStorage
+  // (cleanup-on-read prunes entries for columns that no longer exist
+  // in this dataset). Defaults fill any column the user hasn't yet
+  // resized; stored widths win where both are present.
+  // svelte-ignore state_referenced_locally
+  const initialColumnSizing: Record<string, number> = {
+    ...defaultColumnWidths,
+    ...loadStoredWidths(tableName, loader.columns),
+  };
+
   const table = createSvelteTable<Record<string, any>>(() => ({
     data: loader.windowRows,
     columns: tanstackColumns,
-    // Seed columnSizing from the loader's sample-derived defaults.
-    // From this point on table-core owns the slice; the wrapper mirrors
-    // updates into a $state rune so reads of `table.getState()` are
-    // reactive.
     initialState: {
-      columnSizing: { ...defaultColumnWidths },
+      columnSizing: initialColumnSizing,
     },
     manualSorting: true,
     manualFiltering: true,
@@ -142,6 +157,29 @@
   // template can width-style cells reactively. Reads `table.getState()`
   // which the runes wrapper hooks into the state rune.
   let columnSizing = $derived<Record<string, number>>(table.getState().columnSizing ?? {});
+
+  // Persist widths to localStorage on change (D4). Debounced because
+  // columnResizeMode "onChange" fires per drag-frame; localStorage
+  // writes are cheap but writing 60×/sec is wasteful.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const sizing = columnSizing;
+    if (Object.keys(sizing).length === 0) return;
+    if (saveTimer != null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveStoredWidths(tableName, sizing);
+      saveTimer = null;
+    }, 200);
+    return () => {
+      if (saveTimer != null) {
+        clearTimeout(saveTimer);
+        // On unmount, flush whatever we had pending so a quick close
+        // after a resize doesn't lose the last value.
+        saveStoredWidths(tableName, sizing);
+        saveTimer = null;
+      }
+    };
+  });
 
   // Virtualizer: wraps virtual-core in a Svelte store. Subscribe and
   // mirror into a $state so $effect/$derived can read it the runes way.
