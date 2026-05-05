@@ -98,6 +98,24 @@
     return out;
   }
 
+  /**
+   * Collect every chart spec emitted by tools in this assistant turn.
+   * Lifted to the turn level so charts render in the chat flow itself
+   * (alongside the assistant's prose) rather than nested inside the
+   * collapsed `<details>` for each tool call — that nesting hid the
+   * chart by default and gave it zero dimensions when collapsed, which
+   * prevents the Mosaic runtime from laying out marks.
+   */
+  function collectChartSpecs(tools: ChatToolCall[]): Array<{ spec: any }> {
+    const out: Array<{ spec: any }> = [];
+    for (const tool of tools) {
+      for (const cb of chartBlocks(tool.resultBlocks)) {
+        out.push(cb);
+      }
+    }
+    return out;
+  }
+
   /** Concatenated text blocks from a tool_result content list. */
   function textFromBlocks(blocks: ChatContentBlock[] | undefined): string {
     if (!blocks) return "";
@@ -311,14 +329,11 @@
                         <pre
                           class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
                       {/if}
-                      {#each charts as cb, idx (idx)}
-                        {#if chartContext}
-                          <InlineChartView spec={cb.spec} context={chartContext} {onSaveChart} />
-                        {:else}
-                          <pre
-                            class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[chart spec emitted, but no chart context available to render it]</pre>
-                        {/if}
-                      {/each}
+                      {#if charts.length > 0}
+                        <div class="text-slate-500 dark:text-slate-400 italic">
+                          [{charts.length} chart{charts.length === 1 ? "" : "s"} rendered below]
+                        </div>
+                      {/if}
                       {#each images as img, idx (idx)}
                         <!-- Click handler converts the base64 data URL to a blob URL
                              before opening — modern browsers (Chrome, Safari, Firefox)
@@ -348,6 +363,14 @@
                   {/if}
                 </div>
               </details>
+            {/each}
+            {#each collectChartSpecs(turn.tools) as cb, idx (idx)}
+              {#if chartContext}
+                <InlineChartView spec={cb.spec} context={chartContext} onSaveChart={onSaveChart} />
+              {:else}
+                <pre
+                  class="whitespace-pre-wrap break-words font-mono text-xs text-slate-500 dark:text-slate-400">[chart spec emitted, but no chart context available to render it]</pre>
+              {/if}
             {/each}
             {#if turn.text}
               <div class="prose prose-sm dark:prose-invert max-w-none">
@@ -429,7 +452,9 @@
     font-size: 0.7rem;
     line-height: 1.1;
     cursor: pointer;
-    transition: background-color 120ms ease, border-color 120ms ease;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
   }
   .chat-source-pill:hover:not(:disabled) {
     background: rgb(226 232 240); /* slate-200 */

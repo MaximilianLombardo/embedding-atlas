@@ -17,6 +17,8 @@
   conversation history.
 -->
 <script lang="ts">
+  import { mergeUpdates } from "@embedding-atlas/utils";
+
   import ChartView from "../charts/ChartView.svelte";
 
   import type { ChartContext } from "../charts/chart.js";
@@ -48,6 +50,17 @@
 
   let { spec, context, width = 400, height = 280, onSaveChart }: Props = $props();
 
+  // Local mutable copy of the spec. In-chart edit affordances (e.g. the
+  // scale-type dropdown widget) write here so the chart actually re-renders
+  // with the user's tweaks, while the conversation history's copy of the
+  // model-emitted spec stays untouched. Initialized once from the prop —
+  // each chart block gets its own InlineChartView (keyed by index) and the
+  // model never patches an already-emitted block, so we don't need to
+  // re-sync from the prop. Re-syncing on every parent reactivity tick (as
+  // a naive $effect would) would clobber widget edits during streaming.
+  // svelte-ignore state_referenced_locally
+  let localSpec = $state<any>(structuredClone($state.snapshot(spec)));
+
   // Local state for the chart's interactive UI (e.g. histogram brush).
   // Not persisted anywhere — inline charts are ephemeral. Each instance gets
   // its own bag.
@@ -59,7 +72,9 @@
 
   function handleSave() {
     if (!onSaveChart || saved) return;
-    onSaveChart(spec);
+    // Save the user's current view (with any widget tweaks), not the
+    // pristine model spec — what they see is what gets pinned.
+    onSaveChart(structuredClone($state.snapshot(localSpec)));
     saved = true;
   }
 </script>
@@ -67,7 +82,7 @@
 <div class="inline-chart-frame" style:width="{width}px">
   <div class="inline-chart-body" style:height="{height}px">
     <ChartView
-      {spec}
+      spec={localSpec}
       {context}
       width="container"
       height="container"
@@ -84,8 +99,15 @@
           chartState = { ...chartState, ...(patch ?? {}) };
         }
       }}
-      onSpecChange={() => {
-        // Spec is fixed by the model; ignore in-chart edit affordances.
+      onSpecChange={(patch, mode) => {
+        // Widget edits (scale-type dropdown, normalization toggles, etc.)
+        // mutate the LOCAL copy only — the model-emitted spec in the chat
+        // history stays pristine so re-renders / scroll-back are stable.
+        if (mode === "replace") {
+          localSpec = patch ?? {};
+        } else {
+          localSpec = mergeUpdates(localSpec, patch) ?? localSpec;
+        }
       }}
     />
   </div>

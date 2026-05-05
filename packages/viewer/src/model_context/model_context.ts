@@ -25,6 +25,95 @@ interface PredicateItem {
   predicate: string;
 }
 
+/**
+ * Detect a 1D distribution layer: one axis is binned/plain field, the other
+ * is a count/sum/etc aggregate, and there is no explicit range encoding.
+ */
+function isHistogramLayer(layer: any): "x" | "y" | null {
+  if (!layer?.encoding) return null;
+  const enc = layer.encoding;
+  if (enc.y1 != null || enc.y2 != null || enc.x1 != null || enc.x2 != null) return null;
+  const yIsAggregate = enc.y && "aggregate" in enc.y;
+  const xIsAggregate = enc.x && "aggregate" in enc.x;
+  if (yIsAggregate && !xIsAggregate) return "x"; // x is the binned/categorical axis
+  if (xIsAggregate && !yIsAggregate) return "y";
+  return null;
+}
+
+/**
+ * Rewrite an eCDF layer that puts the field on x as a plain encoding (the
+ * shape models tend to emit) into the canonical {x: ecdf-value, y: ecdf-rank}
+ * pair. Without this, the layered runtime treats x as a grouping key and
+ * draws a sawtooth that connects unrelated samples.
+ *
+ * Triggers when y has aggregate ecdf-rank and x is a plain field. Lifts the
+ * field name from x onto x.aggregate = ecdf-value so the runtime computes
+ * quantile_disc bounds for both axes against the same column.
+ */
+function normalizeEcdfLayer(layer: any): any {
+  const enc = layer?.encoding;
+  if (!enc) return layer;
+  const yIsEcdfRank = enc.y && (enc.y as any).aggregate === "ecdf-rank";
+  const xIsPlainField =
+    enc.x &&
+    "field" in enc.x &&
+    !("aggregate" in enc.x) &&
+    (enc.x as any).bin == null;
+  if (!yIsEcdfRank || !xIsPlainField) return layer;
+  const xField = (enc.x as any).field;
+  return {
+    ...layer,
+    encoding: {
+      ...enc,
+      x: { aggregate: "ecdf-value", field: xField },
+    },
+  };
+}
+
+/**
+ * Apply safety nets to model-emitted inline-chart specs:
+ *
+ *   1. Rewrite layers that use mark: "rect" for a 1D distribution into
+ *      mark: "bar". The Mosaic runtime renders rect marks using y1/y2; when
+ *      only a single scalar y aggregate is provided every rect has height 0
+ *      and the chart looks blank. Heatmaps (both axes are fields with a
+ *      color aggregate) are untouched.
+ *
+ *   2. Rewrite a partial eCDF layer (y: ecdf-rank, x: plain field) to the
+ *      canonical {x: ecdf-value, y: ecdf-rank} shape. Saves the user from
+ *      the sawtooth garbage that results when x stays a grouping key.
+ *
+ *   3. Auto-inject a scale.type widget on the binned axis of histogram-
+ *      shaped layers when the spec has no widgets defined. Models often
+ *      omit `widgets`, so the user loses the linear/log/symlog dropdown
+ *      they got on a previous turn for a structurally identical chart.
+ *      Adding the widget at the entry point keeps the affordance reliable.
+ */
+function normalizeChartSpec(spec: any): any {
+  if (!spec || !Array.isArray(spec.layers)) return spec;
+  let changed = false;
+  let histogramAxis: "x" | "y" | null = null;
+  const layers = spec.layers.map((layer: any) => {
+    const ecdfFixed = normalizeEcdfLayer(layer);
+    if (ecdfFixed !== layer) {
+      changed = true;
+      layer = ecdfFixed;
+    }
+    const axis = isHistogramLayer(layer);
+    if (axis != null) histogramAxis ??= axis;
+    if (layer?.mark === "rect" && axis != null) {
+      changed = true;
+      return { ...layer, mark: "bar" };
+    }
+    return layer;
+  });
+  let result = changed ? { ...spec, layers } : spec;
+  if (histogramAxis != null && (!result.widgets || result.widgets.length === 0)) {
+    result = { ...result, widgets: [{ type: "scale.type", channel: histogramAxis }] };
+  }
+  return result;
+}
+
 /** Find the id of the singleton SQL Predicates panel chart, or null if none. */
 function findPredicatesChartId(charts: Record<string, any>): string | null {
   for (const [id, spec] of Object.entries(charts)) {
@@ -177,6 +266,22 @@ When to use:
 
 The 'spec' argument is the SAME shape add_chart accepts (full BuiltinChartSpec). Schema: ${JSON.stringify(schemaBuiltinChartSpec)}.
 
+Mark choice (CRITICAL — wrong marks render as invisible 0-height shapes):
+  - 1D distribution / histogram of a numeric field → mark: "bar" with encoding x: {field, bin: {desiredCount}}, y: {aggregate: "count"}.
+  - Categorical counts → use {type: "count-plot", data: {field}} (the dedicated chart type, no layers needed).
+  - 2D heatmap (x AND y both binned/categorical) → mark: "rect" with color: {aggregate: "count"}.
+  - Line / time series → mark: "line".
+  - Scatter / bubble → mark: "point".
+  Do NOT use mark: "rect" for a 1D histogram — rects need x1/x2 or y1/y2 ranges; without them they render as 1-pixel marks. Use "bar" instead.
+
+Examples:
+  Histogram of times_cited:
+    {"layers": [{"mark": "bar", "filter": "$filter", "encoding": {"x": {"field": "times_cited", "bin": {"desiredCount": 40}}, "y": {"aggregate": "count"}}}], "selection": {"brush": {"encoding": "x"}}}
+  Count of papers per domain (categorical):
+    {"type": "count-plot", "data": {"field": "domain"}}
+  2D heatmap year × domain:
+    {"layers": [{"mark": "rect", "filter": "$filter", "encoding": {"x": {"field": "year"}, "y": {"field": "domain"}, "color": {"aggregate": "count"}}}]}
+
 Notes:
   - The data may be very large (>100k points). Prefer specs that aggregate (count-plot, histogram, heatmap) over per-row marks.
   - Add "filter": "$filter" to layers so the inline chart cross-filters with the rest of the dashboard. Highly recommended.
@@ -203,11 +308,17 @@ Notes:
             details: validateResult.errors,
           });
         }
+        // Normalize before emitting. The model frequently picks mark: "rect"
+        // for 1D histograms; without y1/y2 those render as 0-height marks.
+        // Rewrite the obvious "1D distribution" pattern to mark: "bar" so the
+        // chart actually renders. Updated tool description is not enough —
+        // the model habitually chooses rect even with explicit ❌ examples.
+        const normalized = normalizeChartSpec(params.spec);
         // Emit a `chart` content block. The backend bridge passes this through
         // to the SSE stream verbatim (so the chat UI can mount InlineChartView)
         // and substitutes a text placeholder for the Anthropic tool_result
         // history (since the API only accepts text/image blocks).
-        return { content: [{ type: "chart", spec: params.spec }] };
+        return { content: [{ type: "chart", spec: normalized }] };
       },
     },
     {
@@ -425,7 +536,7 @@ CRITICAL — call this tool every time the user expresses filter intent, even if
           name: {
             type: "string",
             description:
-              "Optional human-readable label shown on the predicate card. If omitted, the default \"Chat Filter\" is used and successive apply_filter calls overwrite each other.",
+              'Optional human-readable label shown on the predicate card. If omitted, the default "Chat Filter" is used and successive apply_filter calls overwrite each other.',
           },
         },
         required: ["predicate"],
@@ -441,7 +552,7 @@ CRITICAL — call this tool every time the user expresses filter intent, even if
         const predicate = rawPredicate.trim();
         if (predicate === "") {
           return textResponse(
-            "apply_filter failed: the predicate is empty. Provide a DuckDB SQL boolean expression such as \"year > 2020\" or \"domain = 'antibody'\". Use get_data_schema to discover available columns.",
+            'apply_filter failed: the predicate is empty. Provide a DuckDB SQL boolean expression such as "year > 2020" or "domain = \'antibody\'". Use get_data_schema to discover available columns.',
           );
         }
         const rawName = typeof params?.name === "string" ? params.name.trim() : "";
@@ -516,7 +627,7 @@ Other independent filter sources (the embedding brush, predicates the user added
           name: {
             type: "string",
             description:
-              "Optional name of the predicate to remove. If omitted, the default-named \"Chat Filter\" is removed.",
+              'Optional name of the predicate to remove. If omitted, the default-named "Chat Filter" is removed.',
           },
         },
         additionalProperties: false,
