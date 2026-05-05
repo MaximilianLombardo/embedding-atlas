@@ -8,6 +8,7 @@
 
   import {
     streamChat,
+    type ChatContentBlock,
     type ChatContext,
     type ChatEvent,
     type ChatMessage,
@@ -32,6 +33,52 @@
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
     return DOMPurify.sanitize(raw);
+  }
+
+  /** Image blocks pulled from a tool_result content list. */
+  function imageBlocks(blocks: ChatContentBlock[] | undefined) {
+    if (!blocks) return [] as Array<{ media_type: string; data: string }>;
+    const out: Array<{ media_type: string; data: string }> = [];
+    for (const b of blocks) {
+      if (b.type === "image" && (b as any).source?.type === "base64") {
+        const src = (b as any).source as { media_type: string; data: string };
+        out.push({ media_type: src.media_type, data: src.data });
+      }
+    }
+    return out;
+  }
+
+  /** Concatenated text blocks from a tool_result content list. */
+  function textFromBlocks(blocks: ChatContentBlock[] | undefined): string {
+    if (!blocks) return "";
+    return blocks
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { text: string }).text || "")
+      .join("\n")
+      .trim();
+  }
+
+  /**
+   * Open a base64-encoded image in a new tab via a blob URL.
+   *
+   * Direct navigation to `data:` URLs in a new tab is blocked by Chrome,
+   * Safari, and Firefox as a phishing mitigation. `blob:` URLs are not
+   * blocked, so we materialize the bytes into a Blob and open that.
+   * The blob URL is auto-revoked after 60s — long enough for the user to
+   * view, short enough to avoid leaking memory across many uses.
+   */
+  function openImageInNewTab(mediaType: string, base64Data: string) {
+    try {
+      const binary = atob(base64Data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mediaType });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      console.error("Failed to open image", e);
+    }
   }
 
   async function scrollToBottom() {
@@ -86,6 +133,12 @@
         const match = turn.tools.find((t) => t.id === event.id);
         if (match) {
           match.result = event.content;
+          // Structured blocks only arrive when the tool returned non-text
+          // content (typically a screenshot). Older sessions / text-only
+          // results leave this undefined and fall back to `result`.
+          if (event.content_blocks) {
+            match.resultBlocks = event.content_blocks;
+          }
           match.isError = event.is_error;
         }
         break;
@@ -161,8 +214,39 @@
                       2,
                     )}</pre>
                   {#if tool.result !== undefined}
-                    <pre
-                      class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                    {#if tool.resultBlocks}
+                      {@const text = textFromBlocks(tool.resultBlocks)}
+                      {@const images = imageBlocks(tool.resultBlocks)}
+                      {#if text}
+                        <pre
+                          class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
+                      {/if}
+                      {#each images as img, idx (idx)}
+                        <!-- Click handler converts the base64 data URL to a blob URL
+                             before opening — modern browsers (Chrome, Safari, Firefox)
+                             block direct navigation to data: URLs in new tabs as a
+                             phishing mitigation. blob: URLs are allowed. -->
+                        <button
+                          type="button"
+                          class="block p-0 border-0 bg-transparent cursor-zoom-in"
+                          title="Open image in new tab"
+                          onclick={() => openImageInNewTab(img.media_type, img.data)}
+                        >
+                          <img
+                            src={`data:${img.media_type};base64,${img.data}`}
+                            alt={`Tool result from ${tool.name}`}
+                            class="chat-tool-image rounded border border-slate-200 dark:border-slate-700"
+                          />
+                        </button>
+                      {/each}
+                      {#if !text && images.length === 0}
+                        <pre
+                          class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[no displayable content]</pre>
+                      {/if}
+                    {:else}
+                      <pre
+                        class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                    {/if}
                   {/if}
                 </div>
               </details>
@@ -200,3 +284,19 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* Cap the inline screenshot at a sane size in the tool-result strip; the
+     anchor wrapping the image opens the full-resolution data URL in a new
+     tab on click (simpler than a lightbox; matches issue #3 acceptance). */
+  .chat-tool-image {
+    display: block;
+    max-width: 400px;
+    max-height: 300px;
+    width: auto;
+    height: auto;
+    margin: 0.25rem 0;
+    object-fit: contain;
+    cursor: zoom-in;
+  }
+</style>

@@ -244,10 +244,10 @@ def _build_system_prompt(
         "a previous turn in this conversation. The user may have edited or "
         "cleared the filter via the UI between turns, and your own previous "
         "tool-call results may be stale. When the user expresses any filter "
-        "intent (\"filter to\", \"show only\", \"narrow to\", \"select\", "
+        'intent ("filter to", "show only", "narrow to", "select", '
         "etc.), call apply_filter unconditionally — repeat calls with the "
-        "same predicate are safe no-ops. Do NOT say \"that filter is already "
-        "active\" without first calling get_charts to verify; the simpler "
+        'same predicate are safe no-ops. Do NOT say "that filter is already '
+        'active" without first calling get_charts to verify; the simpler '
         "correct path is to just call apply_filter and let it replace.\n\n"
         f"{schema_hint}\n\n"
         f"Current selection: {selection_clause}.\n"
@@ -481,8 +481,18 @@ async def _dispatch_tool(
         sse_content = (
             content if isinstance(content, str) else _summarize_content_for_sse(content)
         )
+        sse_payload: dict[str, Any] = {
+            "id": use_id,
+            "content": sse_content,
+            "is_error": is_error,
+        }
+        # When the bridge returned structured blocks (e.g. screenshots), pass
+        # them through verbatim so the chat UI can render image content inline.
+        # Text-only results stay on the legacy `content: string` codepath.
+        if not isinstance(content, str):
+            sse_payload["content_blocks"] = content
         return (
-            {"id": use_id, "content": sse_content, "is_error": is_error},
+            sse_payload,
             {
                 "type": "tool_result",
                 "tool_use_id": use_id,
