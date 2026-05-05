@@ -21,5 +21,12 @@ export default defineConfig({
   build: {
     target: "esnext",
     chunkSizeWarningLimit: 4096,
+    sourcemap: true,
+  },
+  server: {
+    proxy: {
+      "/data": "http://localhost:5056",
+      "/mcp": "http://localhost:5056",
+    },
   },
 });
