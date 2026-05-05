@@ -20,9 +20,19 @@ export interface ChatContext {
 
 /**
  * Anthropic-format tool_result content block. Mirrors the subset the backend
- * forwards in the SSE `tool_result.content_blocks` field. Only `text` and
- * `image` are handled by the chat UI today; unknown kinds are tolerated for
- * forward-compat with future backend additions.
+ * forwards in the SSE `tool_result.content_blocks` field.
+ *
+ * - `text` and `image` come straight from MCP tools (e.g. screenshots).
+ * - `chart` is a viewer-specific block: the `render_chart_in_chat` MCP tool
+ *   emits one of these so the chat UI can mount a live, interactive chart
+ *   inline in the assistant bubble. The block is forwarded by the backend
+ *   on the SSE side but is replaced with a textual placeholder before the
+ *   tool_result is sent back to the model (Anthropic's tool_result content
+ *   only accepts text/image). `spec` is the same JSON shape `add_chart`
+ *   accepts; we type it as `any` here to avoid pulling cross-package
+ *   chart-spec types into the chat plumbing.
+ * - Unknown kinds are tolerated for forward-compat with future backend
+ *   additions.
  */
 export type ChatContentBlock =
   | { type: "text"; text: string }
@@ -30,6 +40,7 @@ export type ChatContentBlock =
       type: "image";
       source: { type: "base64"; media_type: string; data: string };
     }
+  | { type: "chart"; spec: any }
   | { type: string; [key: string]: unknown };
 
 export type ChatEvent =

@@ -7,7 +7,7 @@
 
   import ChatView from "./ChatView.svelte";
 
-  import type { RowID } from "../charts/chart.js";
+  import type { ChartContext, RowID } from "../charts/chart.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../utils/chat_context.js";
 
   interface Props {
@@ -23,9 +23,24 @@
      * caller already has a direct reference.
      */
     highlight?: Writable<RowID[] | null>;
+    /**
+     * The full ChartContext for the main app. Forwarded to ChatView so
+     * inline charts (`render_chart_in_chat`) mount with the same
+     * coordinator/table/filter as everything else — that's what makes
+     * them cross-filter aware. Optional: when absent, inline-chart
+     * blocks render as a textual placeholder instead.
+     */
+    chartContext?: ChartContext;
+    /**
+     * Called when the user clicks "Add to panel" on an inline chart.
+     * Forwarded to ChatView; the upstream layout owns the actual
+     * promotion (allocate id, splice into the charts dict). When
+     * undefined, the button is hidden.
+     */
+    onSaveChart?: (spec: any) => void;
   }
 
-  let { coordinator, table, filter, highlight }: Props = $props();
+  let { coordinator, table, filter, highlight, chartContext, onSaveChart }: Props = $props();
 
   function onPillClick(rowId: RowID) {
     // Replace any existing highlight with just this row. The embedding
@@ -89,6 +104,13 @@
     </button>
   </div>
   <div class="flex-1 min-h-0">
-    <ChatView endpoint={chat.endpoint} context={chat.context} bind:turns={chat.state.turns} {onPillClick} />
+    <ChatView
+      endpoint={chat.endpoint}
+      context={chat.context}
+      bind:turns={chat.state.turns}
+      {onPillClick}
+      {chartContext}
+      {onSaveChart}
+    />
   </div>
 </div>

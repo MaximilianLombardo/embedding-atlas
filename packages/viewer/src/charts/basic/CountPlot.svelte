@@ -138,9 +138,13 @@
       case "alphabetical":
         return SQL.asc("value");
       case "selected-ascending":
-        return SQL.asc("countSelected");
+        // The unfiltered (cached) side has no countSelected column — fall back
+        // to the total count so the SELECT/ORDER BY column always exists.
+        // Selection-aware ordering is applied on the filtered side, which
+        // does have countSelected (totalCol === "countSelected" there).
+        return SQL.asc(totalCol === "countSelected" ? "countSelected" : totalCol);
       case "selected-descending":
-        return SQL.desc("countSelected");
+        return SQL.desc(totalCol === "countSelected" ? "countSelected" : totalCol);
       case "total-ascending":
         return SQL.asc(totalCol);
       case "total-descending":

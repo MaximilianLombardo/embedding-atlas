@@ -39,7 +39,10 @@ export interface MCPTool {
 /** Tool response format */
 export interface ToolResponse {
   content: Array<{
-    type: "text" | "image" | "video";
+    // `chart` is an Embedding-Atlas-specific block emitted by
+    // `render_chart_in_chat`. The chat backend recognizes it and forwards
+    // the spec to the chat UI for inline rendering.
+    type: "text" | "image" | "video" | "chart";
     text?: string;
     url?: string;
     [key: string]: any;

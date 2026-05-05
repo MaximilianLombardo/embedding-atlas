@@ -4,9 +4,10 @@
   import { marked } from "marked";
   import { tick } from "svelte";
 
+  import InlineChartView from "./InlineChartView.svelte";
   import Spinner from "./Spinner.svelte";
 
-  import type { RowID } from "../charts/chart.js";
+  import type { ChartContext, RowID } from "../charts/chart.js";
   import {
     streamChat,
     type ChatCitation,
@@ -32,6 +33,20 @@
      * when this is unset.
      */
     onPillClick?: (rowId: RowID) => void;
+    /**
+     * The main app's ChartContext. Threaded through so inline charts
+     * emitted by `render_chart_in_chat` mount with the same coordinator,
+     * table, columns, filter, etc. as the rest of the app — that's what
+     * makes inline charts cross-filter aware. When undefined, chart
+     * blocks fall back to a textual placeholder.
+     */
+    chartContext?: ChartContext;
+    /**
+     * Called when the user clicks "Add to panel" on an inline chart.
+     * Receives the chart spec emitted by the model. When undefined, the
+     * button is hidden on inline charts.
+     */
+    onSaveChart?: (spec: any) => void;
   }
 
   let {
@@ -40,6 +55,8 @@
     initialPrompt = null,
     turns = $bindable([]),
     onPillClick,
+    chartContext,
+    onSaveChart,
   }: Props = $props();
 
   let pending = $state(false);
@@ -60,6 +77,40 @@
       if (b.type === "image" && (b as any).source?.type === "base64") {
         const src = (b as any).source as { media_type: string; data: string };
         out.push({ media_type: src.media_type, data: src.data });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Chart-spec blocks from a tool_result content list. Each is rendered
+   * via <InlineChartView /> so the assistant can answer with a live,
+   * interactive chart instead of a screenshot.
+   */
+  function chartBlocks(blocks: ChatContentBlock[] | undefined): Array<{ spec: any }> {
+    if (!blocks) return [];
+    const out: Array<{ spec: any }> = [];
+    for (const b of blocks) {
+      if (b.type === "chart" && (b as any).spec != null) {
+        out.push({ spec: (b as any).spec });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Collect every chart spec emitted by tools in this assistant turn.
+   * Lifted to the turn level so charts render in the chat flow itself
+   * (alongside the assistant's prose) rather than nested inside the
+   * collapsed `<details>` for each tool call — that nesting hid the
+   * chart by default and gave it zero dimensions when collapsed, which
+   * prevents the Mosaic runtime from laying out marks.
+   */
+  function collectChartSpecs(tools: ChatToolCall[]): Array<{ spec: any }> {
+    const out: Array<{ spec: any }> = [];
+    for (const tool of tools) {
+      for (const cb of chartBlocks(tool.resultBlocks)) {
+        out.push(cb);
       }
     }
     return out;
@@ -273,9 +324,15 @@
                     {#if tool.resultBlocks}
                       {@const text = textFromBlocks(tool.resultBlocks)}
                       {@const images = imageBlocks(tool.resultBlocks)}
+                      {@const charts = chartBlocks(tool.resultBlocks)}
                       {#if text}
                         <pre
                           class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
+                      {/if}
+                      {#if charts.length > 0}
+                        <div class="text-slate-500 dark:text-slate-400 italic">
+                          [{charts.length} chart{charts.length === 1 ? "" : "s"} rendered below]
+                        </div>
                       {/if}
                       {#each images as img, idx (idx)}
                         <!-- Click handler converts the base64 data URL to a blob URL
@@ -295,7 +352,7 @@
                           />
                         </button>
                       {/each}
-                      {#if !text && images.length === 0}
+                      {#if !text && images.length === 0 && charts.length === 0}
                         <pre
                           class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[no displayable content]</pre>
                       {/if}
@@ -306,6 +363,14 @@
                   {/if}
                 </div>
               </details>
+            {/each}
+            {#each collectChartSpecs(turn.tools) as cb, idx (idx)}
+              {#if chartContext}
+                <InlineChartView spec={cb.spec} context={chartContext} onSaveChart={onSaveChart} />
+              {:else}
+                <pre
+                  class="whitespace-pre-wrap break-words font-mono text-xs text-slate-500 dark:text-slate-400">[chart spec emitted, but no chart context available to render it]</pre>
+              {/if}
             {/each}
             {#if turn.text}
               <div class="prose prose-sm dark:prose-invert max-w-none">
@@ -387,7 +452,9 @@
     font-size: 0.7rem;
     line-height: 1.1;
     cursor: pointer;
-    transition: background-color 120ms ease, border-color 120ms ease;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
   }
   .chat-source-pill:hover:not(:disabled) {
     background: rgb(226 232 240); /* slate-200 */
