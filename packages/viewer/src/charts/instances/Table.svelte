@@ -28,6 +28,7 @@
 <script lang="ts">
   import type { ColumnDef, SortingState } from "@tanstack/table-core";
   import { createVirtualizer, type SvelteVirtualizer } from "@tanstack/svelte-virtual";
+  import { untrack } from "svelte";
 
   import ContentRenderer from "../../renderers/ContentRenderer.svelte";
 
@@ -147,32 +148,66 @@
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
-  let virtualizer = $state.raw<SvelteVirtualizer<HTMLDivElement, HTMLTableRowElement> | undefined>(undefined);
+  // virtualizerStore emits the SAME Virtualizer instance on every range
+  // change (the instance's internal state mutates in place). A
+  // $state.raw rune compares by Object.is, so assigning the same
+  // reference doesn't trigger reactivity. We use a tick counter
+  // bumped on each emission to drive Svelte derivations off the
+  // virtualizer's mutable state.
+  let virtualizer: SvelteVirtualizer<HTMLDivElement, HTMLTableRowElement> | undefined;
+  let virtualizerTick = $state(0);
 
   $effect(() => {
     return virtualizerStore.subscribe((v) => {
-      virtualizer = v;
+      // The subscriber may fire synchronously inside another effect's
+      // body (e.g. when count-updating setOptions triggers store.set).
+      // Without untrack, the read+write of `virtualizerTick` inside
+      // that effect's tracking scope adds tick as a dep of the *outer*
+      // effect, which then re-fires on every tick bump → infinite
+      // update loop. untrack breaks the cross-dependency.
+      untrack(() => {
+        virtualizer = v;
+        virtualizerTick++;
+      });
     });
   });
 
   // Push count updates into the virtualizer when totalCount changes.
-  // The store will emit on options change, which keeps the rest of the
-  // reactivity coherent.
+  // setOptions triggers an internal range recompute and re-emit on the
+  // store, so virtualizerTick bumps via the subscribe path above.
   $effect(() => {
-    if (!virtualizer) return;
-    virtualizer.setOptions({ count: loader.totalCount });
+    const count = loader.totalCount;
+    untrack(() => {
+      virtualizer?.setOptions({ count });
+    });
   });
 
   // Tell the loader the visible range — it slides the window if needed.
+  // Wrap ensureRange in untrack so internal reads of loader state don't
+  // become dependencies of *this* effect; only virtualizerTick should
+  // re-fire it.
   $effect(() => {
-    if (!virtualizer) return;
-    const r = virtualizer.range;
-    if (r) loader.ensureRange(r.startIndex, r.endIndex);
+    void virtualizerTick;
+    untrack(() => {
+      if (!virtualizer) return;
+      const r = virtualizer.range;
+      if (r) loader.ensureRange(r.startIndex, r.endIndex);
+    });
   });
 
   // Visible items. Each carries {index, key, size, start, end, lane}.
-  let virtualItems = $derived(virtualizer?.getVirtualItems() ?? []);
-  let totalSize = $derived(virtualizer?.getTotalSize() ?? 0);
+  // The `void virtualizerTick` reads make these derivations track the
+  // tick rune; without it, range changes (which mutate in place rather
+  // than swapping the virtualizer instance) wouldn't re-fire the
+  // derived.
+  let virtualItems = $derived.by(() => {
+    void virtualizerTick;
+    return virtualizer?.getVirtualItems() ?? [];
+  });
+  let totalSize = $derived.by(() => {
+    void virtualizerTick;
+    return virtualizer?.getTotalSize() ?? 0;
+  });
   // Padding-row spacers — keep the rendered rows in document order for
   // sticky-header z-ordering. Top spacer pushes the first visible row
   // down to its true Y; bottom spacer fills the remainder.
