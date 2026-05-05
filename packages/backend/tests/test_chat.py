@@ -89,26 +89,69 @@ def test_cited_rows_from_local_sql_envelope():
             "truncated": False,
         }
     )
-    assert _extract_cited_rows(payload, "id") == [1, 2, 3]
+    assert _extract_cited_rows(payload, "id") == [
+        {"id": 1, "label": "a"},
+        {"id": 2, "label": "b"},
+        {"id": 3, "label": "c"},
+    ]
+
+
+def test_cited_rows_picks_title_over_text():
+    payload = json.dumps(
+        {"rows": [{"id": 1, "title": "Hello", "text": "Long abstract..."}]}
+    )
+    assert _extract_cited_rows(payload, "id") == [{"id": 1, "label": "Hello"}]
+
+
+def test_cited_rows_falls_back_to_first_string_column():
+    payload = json.dumps(
+        {"rows": [{"id": 5, "doi": "10.1/foo", "year": 2024}]}
+    )
+    assert _extract_cited_rows(payload, "id") == [
+        {"id": 5, "label": "10.1/foo"}
+    ]
+
+
+def test_cited_rows_truncates_long_labels():
+    long_title = "x" * 500
+    payload = json.dumps({"rows": [{"id": 1, "title": long_title}]})
+    result = _extract_cited_rows(payload, "id")
+    assert result[0]["id"] == 1
+    assert result[0]["label"].endswith("…")
+    assert len(result[0]["label"]) <= 100
+
+
+def test_cited_rows_label_none_when_no_string_columns():
+    payload = json.dumps({"rows": [{"id": 7, "year": 2024, "count": 12}]})
+    assert _extract_cited_rows(payload, "id") == [{"id": 7, "label": None}]
 
 
 def test_cited_rows_from_bare_array():
-    payload = json.dumps([{"row_id": "x"}, {"row_id": "y"}])
-    assert _extract_cited_rows(payload, "row_id") == ["x", "y"]
+    payload = json.dumps([{"row_id": "x", "title": "A"}, {"row_id": "y", "title": "B"}])
+    assert _extract_cited_rows(payload, "row_id") == [
+        {"id": "x", "label": "A"},
+        {"id": "y", "label": "B"},
+    ]
 
 
 def test_cited_rows_dedupes_preserving_order():
-    payload = json.dumps({"rows": [{"id": 1}, {"id": 2}, {"id": 1}, {"id": 3}]})
-    assert _extract_cited_rows(payload, "id") == [1, 2, 3]
+    payload = json.dumps(
+        {"rows": [{"id": 1, "title": "a"}, {"id": 2, "title": "b"}, {"id": 1, "title": "a"}, {"id": 3, "title": "c"}]}
+    )
+    assert _extract_cited_rows(payload, "id") == [
+        {"id": 1, "label": "a"},
+        {"id": 2, "label": "b"},
+        {"id": 3, "label": "c"},
+    ]
 
 
 def test_cited_rows_caps_at_limit():
     payload = json.dumps(
-        {"rows": [{"id": i} for i in range(CITED_ROWS_CAP + 5)]}
+        {"rows": [{"id": i, "title": f"row {i}"} for i in range(CITED_ROWS_CAP + 5)]}
     )
     extracted = _extract_cited_rows(payload, "id")
     assert len(extracted) == CITED_ROWS_CAP
-    assert extracted[0] == 0
+    assert extracted[0] == {"id": 0, "label": "row 0"}
 
 
 def test_cited_rows_empty_when_id_column_absent():

@@ -173,6 +173,7 @@ def _build_system_prompt(
     row_count: int | None,
     sample: list[dict[str, Any]],
     has_sql_tool: bool,
+    id_column: str | None = None,
 ) -> str:
     selection_clause = (
         f"WHERE {predicate}" if predicate else "the user has not made a selection"
@@ -191,12 +192,24 @@ def _build_system_prompt(
         {k: _summarize_for_prompt(v) for k, v in row.items()}
         for row in sample[:SAMPLE_ROW_LIMIT]
     ]
+    citation_id_hint = (
+        f"\n\nCITATION PILLS — when your SQL selects per-row data from `{table}` "
+        f"(rather than aggregates), ALWAYS include the row-id column "
+        f"`{id_column}` in your SELECT. The chat UI parses this column out of "
+        "the result and renders clickable citation pills under your reply, so "
+        "the user can verify your claims by clicking through to the actual row "
+        "in the embedding and table. Forgetting this column = no pills appear "
+        "and your answer becomes harder to audit. Aggregate queries (COUNT, "
+        "SUM, GROUP BY without per-row identity) don't need it."
+        if id_column
+        else ""
+    )
     tool_hint = (
         "If the user asks about something the sample doesn't cover, call the "
         "`run_sql_query` tool to inspect more rows. Always scope queries to the "
         "selection by including the WHERE predicate (or by adding "
         "`WHERE <predicate>` if the user has selected something). Keep result "
-        "sets small."
+        "sets small." + citation_id_hint
         if has_sql_tool
         else ""
     )
@@ -547,27 +560,62 @@ async def _dispatch_tool(
 
 
 CITED_ROWS_CAP = 20
+CITED_LABEL_MAX_LEN = 100
+
+# Columns to prefer as a human-readable label, in order. Matched
+# case-insensitively against keys present in the row dict. If none match,
+# falls back to the first non-id string-valued column.
+_LABEL_COLUMN_PREFERENCE = ("title", "name", "label", "text")
 
 
-def _extract_cited_rows(content: Any, id_column: str | None) -> list[Any]:
-    """Pull row IDs out of a SQL-style tool result for citation pills.
+def _pick_label_column(row: dict[str, Any], id_column: str | None) -> str | None:
+    """Choose the best column to use as a citation pill label, given a
+    sample row. Preference order: title > name > label > text; otherwise
+    the first non-id key whose value is a non-empty string.
+    """
+    keys_lc = {k.lower(): k for k in row.keys()}
+    for pref in _LABEL_COLUMN_PREFERENCE:
+        if pref in keys_lc:
+            actual = keys_lc[pref]
+            if isinstance(row[actual], str) and row[actual]:
+                return actual
+    for k, v in row.items():
+        if k == id_column:
+            continue
+        if isinstance(v, str) and v:
+            return k
+    return None
 
-    Heuristic: the local ``run_sql_query`` (in this module) returns a JSON
-    payload of shape ``{"rows": [...], "row_count": N, "truncated": bool}``;
-    the bridge's `run_sql_query` typically yields the same envelope as a
-    JSON string. We also accept a bare list of dicts. Anything else (free
-    text, image blocks, error messages) returns no citations.
+
+def _truncate_label(value: Any) -> str | None:
+    """Coerce an arbitrary cell value to a short pill label, or None."""
+    if value is None:
+        return None
+    s = str(value)
+    if not s:
+        return None
+    if len(s) > CITED_LABEL_MAX_LEN:
+        return s[: CITED_LABEL_MAX_LEN - 1] + "…"
+    return s
+
+
+def _extract_cited_rows(content: Any, id_column: str | None) -> list[dict[str, Any]]:
+    """Pull citation entries (id + human-readable label) out of a SQL-style
+    tool result for citation pills.
+
+    Each entry has shape ``{"id": <row_id>, "label": <str | None>}``.
+    The label is picked heuristically from the row dict via
+    ``_pick_label_column`` (title > name > label > text > first string col).
+    Capped at ``CITED_ROWS_CAP`` entries to keep the pill row reasonable.
 
     Cases covered:
       - JSON string with ``{"rows": [{...}, ...]}`` (local + bridge SQL tool)
       - JSON string that is a bare ``[{...}, ...]`` array
     Cases NOT covered (returning empty):
       - Tabular plain text (markdown tables, CSV, etc.)
-      - Bridge tool results that wrap the rows in an unfamiliar envelope
+      - Tool results that wrap rows in an unfamiliar envelope
       - Results without the ``id_column`` key in the row dicts
       - Any case where ``id_column`` is unset (chat context omitted it)
-
-    Capped at ``CITED_ROWS_CAP`` to keep the pill row from blowing out.
     """
     if not id_column:
         return []
@@ -591,22 +639,25 @@ def _extract_cited_rows(content: Any, id_column: str | None) -> list[Any]:
     if not isinstance(rows[0], dict) or id_column not in rows[0]:
         return []
 
-    out: list[Any] = []
+    label_col = _pick_label_column(rows[0], id_column)
+
+    out: list[dict[str, Any]] = []
     seen: set[Any] = set()
     for row in rows:
         if not isinstance(row, dict) or id_column not in row:
             continue
         rid = row[id_column]
         # Hashable check before dedup; fall back to direct append for
-        # unusual id types (lists, dicts) that shouldn't appear here but
-        # we don't want to crash on.
+        # unusual id types that shouldn't appear here but we don't want
+        # to crash on.
         try:
             if rid in seen:
                 continue
             seen.add(rid)
         except TypeError:
             pass
-        out.append(rid)
+        label = _truncate_label(row.get(label_col)) if label_col else None
+        out.append({"id": rid, "label": label})
         if len(out) >= CITED_ROWS_CAP:
             break
     return out
@@ -790,6 +841,7 @@ async def stream_chat(
         row_count=row_count,
         sample=sample,
         has_sql_tool=has_sql_tool,
+        id_column=id_column,
     )
 
     yield _sse(

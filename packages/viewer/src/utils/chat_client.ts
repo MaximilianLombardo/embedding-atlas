@@ -44,10 +44,11 @@ export type ChatEvent =
       // typically a screenshot. Absent for legacy text-only results.
       content_blocks?: ChatContentBlock[];
       is_error: boolean;
-      // Row IDs extracted from a SQL-style tool result (matches the
-      // dataset's id_column). Backend includes this on `run_sql_query`
-      // results when the rows carry the id column. Absent otherwise.
-      cited_rows?: RowID[];
+      // Citation entries extracted from a SQL-style tool result. Each entry
+      // pairs a row id (the dataset's id_column value) with an optional
+      // human-readable label drawn from the row (title/name/text/etc.).
+      // Absent for tool results that don't include the id column.
+      cited_rows?: ChatCitation[];
     }
   | { type: "done"; reason?: string }
   | { type: "error"; message: string };
@@ -65,11 +66,19 @@ export interface ChatToolCall {
   resultBlocks?: ChatContentBlock[];
   isError?: boolean;
   /**
-   * Row IDs the tool returned, when the result was SQL-shaped and
-   * included the dataset's id column. Used to render citation pills at
-   * the end of the assistant turn.
+   * Citation entries extracted from a SQL-shaped tool result whose rows
+   * carry the dataset's id column. Each entry has a row id plus an
+   * optional human-readable label (title/name/text/etc.) used for the
+   * pill text. Used to render citation pills at the end of the assistant
+   * turn.
    */
-  citedRows?: RowID[];
+  citedRows?: ChatCitation[];
+}
+
+/** A single citation pill. */
+export interface ChatCitation {
+  id: RowID;
+  label?: string | null;
 }
 
 export interface ChatTurn {

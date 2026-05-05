@@ -9,6 +9,7 @@
   import type { RowID } from "../charts/chart.js";
   import {
     streamChat,
+    type ChatCitation,
     type ChatContentBlock,
     type ChatContext,
     type ChatEvent,
@@ -176,26 +177,35 @@
    * de-duplicated, preserving first-seen order. Used to render a single
    * "Sources:" pill row at the end of the turn rather than one per tool.
    */
-  function collectCitedRows(tools: ChatToolCall[]): RowID[] {
-    const out: RowID[] = [];
+  function collectCitedRows(tools: ChatToolCall[]): ChatCitation[] {
+    const out: ChatCitation[] = [];
     const seen = new Set<string>();
     for (const tool of tools) {
       if (!tool.citedRows) continue;
-      for (const id of tool.citedRows) {
+      for (const c of tool.citedRows) {
         // RowID is `any` in the codebase; stringify for dedup so we
         // handle numeric and string IDs uniformly without surprises.
-        const key = String(id);
+        const key = String(c.id);
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push(id);
+        out.push(c);
       }
     }
     return out;
   }
 
-  function pillLabel(id: RowID): string {
-    const s = String(id);
+  /** Short label for a pill: prefer the human-readable label, falling
+   * back to a truncated stringified id when no label is available. */
+  function pillLabel(c: ChatCitation): string {
+    if (c.label) return c.label.length > 40 ? c.label.slice(0, 39) + "…" : c.label;
+    const s = String(c.id);
     return s.length > 10 ? s.slice(0, 10) + "…" : s;
+  }
+
+  /** Tooltip text — full label + id, or just id when no label. */
+  function pillTitle(c: ChatCitation): string {
+    if (c.label) return `${c.label}\n(row ${c.id})`;
+    return `row ${c.id}`;
   }
 
   function onTextareaKeydown(e: KeyboardEvent) {
@@ -305,15 +315,15 @@
             {#if collectCitedRows(turn.tools).length > 0}
               <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
                 <span class="select-none">Sources:</span>
-                {#each collectCitedRows(turn.tools) as rowId, idx (idx)}
+                {#each collectCitedRows(turn.tools) as citation, idx (idx)}
                   <button
                     type="button"
-                    class="chat-source-pill font-mono"
-                    title={String(rowId)}
-                    onclick={() => onPillClick?.(rowId)}
+                    class="chat-source-pill"
+                    title={pillTitle(citation)}
+                    onclick={() => onPillClick?.(citation.id)}
                     disabled={!onPillClick}
                   >
-                    {pillLabel(rowId)}
+                    {pillLabel(citation)}
                   </button>
                 {/each}
               </div>
