@@ -1,6 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  import { interactionHandler } from "@embedding-atlas/utils";
+  import { deepEquals, interactionHandler } from "@embedding-atlas/utils";
   import { makeClient, type Coordinator, type Selection, type SelectionClause } from "@uwdata/mosaic-core";
   import * as SQL from "@uwdata/mosaic-sql";
 
@@ -87,6 +87,17 @@
       .filter((x) => x.special == null)
       .reduce((a, b) => Math.max(a, showTotalBars ? b.count : b.countSelected), 0) ?? 0,
   );
+
+  // Shallow Map equality on string→number entries. Used by the skip-no-op
+  // gate in the filtered client; deepEquals can't introspect Map contents.
+  function mapsShallowEqual(a: Map<string, number>, b: Map<string, number>): boolean {
+    if (a === b) return true;
+    if (a.size !== b.size) return false;
+    for (let [k, v] of a) {
+      if (b.get(k) !== v) return false;
+    }
+    return true;
+  }
 
   function fieldExpr(field: SQLField): SQL.ExprNode {
     if (typeof field == "string") {
@@ -264,13 +275,22 @@
       query: () => unfilteredQuery(table, field, isListData, limit),
       queryResult: (result: any) => {
         let rows: { value: string | null; count: number; total: number }[] = result.toArray();
+        let next: { items: Item[]; sumTotal: number };
         if (rows.length == 0) {
-          unfilteredData = { items: [], sumTotal: 0 };
-          return;
+          next = { items: [], sumTotal: 0 };
+        } else {
+          let total = rows[0].total ?? 0;
+          let { items } = rowsToItems(rows, (r) => r.count, total, limit);
+          next = { items, sumTotal: total };
         }
-        let total = rows[0].total ?? 0;
-        let { items } = rowsToItems(rows, (r) => r.count, total, limit);
-        unfilteredData = { items, sumTotal: total };
+        // Skip-no-op gate (issue #11): if the new data is structurally equal
+        // to the current value, don't reassign $state.raw. This avoids
+        // re-running chartData $derived.by and the keyed {#each} update path,
+        // which is the long-task source on deselect when the cleared filter
+        // produces visually identical output.
+        // See ideas/issue-11-deselect-render-plan.md (Fix A).
+        if (deepEquals(unfilteredData, next)) return;
+        unfilteredData = next;
       },
     });
 
@@ -295,6 +315,9 @@
         let rows: { value: string | null; countSelected: number; totalSelected: number }[] = result.toArray();
         let isFiltered = filter.clauses.length > 0;
         if (!isFiltered) {
+          // Skip-no-op gate (issue #11): if filteredData is already cleared,
+          // don't reassign — this is the deselect hot path.
+          if (filteredData === undefined) return;
           filteredData = undefined;
           return;
         }
@@ -315,7 +338,19 @@
         if (visibleSum < totalSelected) {
           itemsByValue.set(OTHER_VALUE, totalSelected - visibleSum);
         }
-        filteredData = { itemsByValue, sumSelected: totalSelected, isFiltered };
+        let next = { itemsByValue, sumSelected: totalSelected, isFiltered };
+        // Skip-no-op gate (issue #11): compare against the current filteredData.
+        // deepEquals walks Map entries via Object.keys (Maps have no enumerable
+        // own keys), so we hand-compare itemsByValue contents explicitly.
+        if (
+          filteredData !== undefined &&
+          filteredData.isFiltered === next.isFiltered &&
+          filteredData.sumSelected === next.sumSelected &&
+          mapsShallowEqual(filteredData.itemsByValue, next.itemsByValue)
+        ) {
+          return;
+        }
+        filteredData = next;
       },
     });
 

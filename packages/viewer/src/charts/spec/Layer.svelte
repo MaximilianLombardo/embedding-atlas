@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { deepEquals } from "@embedding-atlas/utils";
   import type { SVGAttributes } from "svelte/elements";
   import type { ChartTheme } from "../common/theme.js";
   import type { XYFrameProxy } from "../common/types.js";
@@ -111,7 +112,31 @@
     return elements;
   }
 
+  // Cached inputs from the previous render. Used by the skip-no-op gate
+  // (issue #11): when Mosaic re-emits a queryResult that is structurally
+  // identical to the prior one (e.g. clearing a brush back to "no filter"
+  // produces the same histogram bins), we can skip rebuilding the SVG <g>.
+  // Equality strategy: deepEquals on (proxy, theme, layer). `layer` is the
+  // smallest correctness-complete identity for the rendered fragment — it
+  // carries `data`, `style`, dimensions and primitive. `proxy` and `theme`
+  // are tracked because resize / theme changes also feed createElements.
+  // Cost is O(bins × columns), bounded (default ~20 bins). The frag is built
+  // off-DOM, so this gate avoids the synchronous replaceChildren and the
+  // accompanying style/layout/paint work.
+  let prevProxy: XYFrameProxy | undefined = undefined;
+  let prevTheme: ChartTheme | undefined = undefined;
+  let prevLayer: LayerOutputs | undefined = undefined;
+
   $effect(() => {
+    if (
+      prevLayer !== undefined &&
+      prevProxy === proxy &&
+      prevTheme === theme &&
+      deepEquals(prevLayer, layer)
+    ) {
+      return;
+    }
+
     let elements = createElements({ proxy, data: layer.data, theme }, layer);
 
     let frag = document.createDocumentFragment();
@@ -119,6 +144,10 @@
       frag.appendChild(el);
     }
     container.replaceChildren(frag);
+
+    prevProxy = proxy;
+    prevTheme = theme;
+    prevLayer = layer;
   });
 </script>
 
