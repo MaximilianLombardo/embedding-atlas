@@ -24,6 +24,10 @@ const STORAGE_PREFIX = "embedding-atlas:widths:";
  */
 export function loadStoredWidths(tableName: string, columns: string[]): Record<string, number> {
   if (typeof localStorage === "undefined") return {};
+  // Guard against transient `undefined` / empty tableName during component
+  // mount races. Without this, we'd accumulate a stray "widths:undefined"
+  // key on every cold start.
+  if (!tableName) return {};
   const key = STORAGE_PREFIX + tableName;
   let stored: unknown;
   try {
@@ -55,6 +59,7 @@ export function loadStoredWidths(tableName: string, columns: string[]): Record<s
 /** Persist the current width map for a table. Failures are swallowed. */
 export function saveStoredWidths(tableName: string, widths: Record<string, number>): void {
   if (typeof localStorage === "undefined") return;
+  if (!tableName) return;
   try {
     localStorage.setItem(STORAGE_PREFIX + tableName, JSON.stringify(widths));
   } catch {
