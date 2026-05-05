@@ -328,6 +328,7 @@ async def _direct_stream(
     table: str,
     predicate: str | None,
     mcp_bridge: McpBridgeClient | None = None,
+    id_column: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Anthropic Messages API path with streaming + tool loop.
 
@@ -442,6 +443,7 @@ async def _direct_stream(
                     use,
                     bridge=mcp_bridge,
                     duckdb_connection=duckdb_connection,
+                    id_column=id_column,
                 )
                 for use in tool_uses
             )
@@ -463,12 +465,18 @@ async def _dispatch_tool(
     *,
     bridge: McpBridgeClient | None,
     duckdb_connection: duckdb.DuckDBPyConnection | None,
+    id_column: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run one tool call and return (sse_payload, history_entry).
 
     Bridge takes precedence when available — the viewer-side tool list
     already covers `run_sql_query`, so we don't need the local fallback.
     Without a bridge, fall back to the local DuckDB-backed SQL tool.
+
+    When the tool result is a JSON-serialized SQL response that includes
+    the configured ``id_column``, extract the row IDs and surface them on
+    the SSE payload as ``cited_rows`` so the chat UI can render clickable
+    citation pills.
     """
     name = use["name"]
     use_id = use["id"]
@@ -491,6 +499,9 @@ async def _dispatch_tool(
         # Text-only results stay on the legacy `content: string` codepath.
         if not isinstance(content, str):
             sse_payload["content_blocks"] = content
+        cited = _extract_cited_rows(sse_content, id_column) if not is_error else []
+        if cited:
+            sse_payload["cited_rows"] = cited
         return (
             sse_payload,
             {
@@ -505,8 +516,16 @@ async def _dispatch_tool(
         sql = arguments.get("sql", "")
         text, is_error = _run_sql_tool(duckdb_connection, sql)
         trimmed = _truncate(text, TOOL_RESULT_TRUNCATE)
+        sse_payload: dict[str, Any] = {
+            "id": use_id,
+            "content": trimmed,
+            "is_error": is_error,
+        }
+        cited = _extract_cited_rows(trimmed, id_column) if not is_error else []
+        if cited:
+            sse_payload["cited_rows"] = cited
         return (
-            {"id": use_id, "content": trimmed, "is_error": is_error},
+            sse_payload,
             {
                 "type": "tool_result",
                 "tool_use_id": use_id,
@@ -525,6 +544,72 @@ async def _dispatch_tool(
             "is_error": True,
         },
     )
+
+
+CITED_ROWS_CAP = 20
+
+
+def _extract_cited_rows(content: Any, id_column: str | None) -> list[Any]:
+    """Pull row IDs out of a SQL-style tool result for citation pills.
+
+    Heuristic: the local ``run_sql_query`` (in this module) returns a JSON
+    payload of shape ``{"rows": [...], "row_count": N, "truncated": bool}``;
+    the bridge's `run_sql_query` typically yields the same envelope as a
+    JSON string. We also accept a bare list of dicts. Anything else (free
+    text, image blocks, error messages) returns no citations.
+
+    Cases covered:
+      - JSON string with ``{"rows": [{...}, ...]}`` (local + bridge SQL tool)
+      - JSON string that is a bare ``[{...}, ...]`` array
+    Cases NOT covered (returning empty):
+      - Tabular plain text (markdown tables, CSV, etc.)
+      - Bridge tool results that wrap the rows in an unfamiliar envelope
+      - Results without the ``id_column`` key in the row dicts
+      - Any case where ``id_column`` is unset (chat context omitted it)
+
+    Capped at ``CITED_ROWS_CAP`` to keep the pill row from blowing out.
+    """
+    if not id_column:
+        return []
+    if not isinstance(content, str) or not content:
+        return []
+    stripped = content.lstrip()
+    if not stripped or stripped[0] not in "[{":
+        return []
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    rows: Any = None
+    if isinstance(parsed, dict):
+        rows = parsed.get("rows")
+    elif isinstance(parsed, list):
+        rows = parsed
+    if not isinstance(rows, list) or not rows:
+        return []
+    if not isinstance(rows[0], dict) or id_column not in rows[0]:
+        return []
+
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for row in rows:
+        if not isinstance(row, dict) or id_column not in row:
+            continue
+        rid = row[id_column]
+        # Hashable check before dedup; fall back to direct append for
+        # unusual id types (lists, dicts) that shouldn't appear here but
+        # we don't want to crash on.
+        try:
+            if rid in seen:
+                continue
+            seen.add(rid)
+        except TypeError:
+            pass
+        out.append(rid)
+        if len(out) >= CITED_ROWS_CAP:
+            break
+    return out
 
 
 def _summarize_content_for_sse(content: list[dict[str, Any]]) -> str:
@@ -688,6 +773,7 @@ async def stream_chat(
     context = body.get("context") or {}
     predicate = context.get("predicate")
     text_column = context.get("text_column")
+    id_column = context.get("id_column")
 
     sample: list[dict[str, Any]] = []
     row_count: int | None = None
@@ -726,6 +812,7 @@ async def stream_chat(
             table=table,
             predicate=predicate,
             mcp_bridge=mcp_bridge,
+            id_column=id_column,
         ):
             yield chunk
     elif mode == "agent" and _agent_available():

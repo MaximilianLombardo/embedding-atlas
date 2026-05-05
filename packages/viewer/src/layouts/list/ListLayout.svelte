@@ -164,7 +164,12 @@
             {/if}
             {#if chatAvailable && tableTab === "chat" && chat != null}
               <div class="flex-1 overflow-hidden rounded-md min-h-0">
-                <ChatPanel coordinator={context.coordinator} table={context.table} filter={context.filter} />
+                <ChatPanel
+                  coordinator={context.coordinator}
+                  table={context.table}
+                  filter={context.filter}
+                  highlight={context.highlight}
+                />
               </div>
             {:else}
               <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">

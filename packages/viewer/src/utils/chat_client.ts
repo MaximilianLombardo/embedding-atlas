@@ -3,6 +3,8 @@
 // Streams Server-Sent Events from the Embedding Atlas chat backend.
 // Mirrors the event schema produced by `packages/backend/embedding_atlas/chat.py`.
 
+import type { RowID } from "../charts/chart.js";
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -42,6 +44,10 @@ export type ChatEvent =
       // typically a screenshot. Absent for legacy text-only results.
       content_blocks?: ChatContentBlock[];
       is_error: boolean;
+      // Row IDs extracted from a SQL-style tool result (matches the
+      // dataset's id_column). Backend includes this on `run_sql_query`
+      // results when the rows carry the id column. Absent otherwise.
+      cited_rows?: RowID[];
     }
   | { type: "done"; reason?: string }
   | { type: "error"; message: string };
@@ -58,6 +64,12 @@ export interface ChatToolCall {
    */
   resultBlocks?: ChatContentBlock[];
   isError?: boolean;
+  /**
+   * Row IDs the tool returned, when the result was SQL-shaped and
+   * included the dataset's id column. Used to render citation pills at
+   * the end of the assistant turn.
+   */
+  citedRows?: RowID[];
 }
 
 export interface ChatTurn {

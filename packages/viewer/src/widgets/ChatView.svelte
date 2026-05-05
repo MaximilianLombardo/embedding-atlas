@@ -6,12 +6,14 @@
 
   import Spinner from "./Spinner.svelte";
 
+  import type { RowID } from "../charts/chart.js";
   import {
     streamChat,
     type ChatContentBlock,
     type ChatContext,
     type ChatEvent,
     type ChatMessage,
+    type ChatToolCall,
     type ChatTurn,
   } from "../utils/chat_client.js";
 
@@ -21,9 +23,23 @@
     initialPrompt?: string | null;
     /** History; bind from parent so it survives modal/tab close. */
     turns?: ChatTurn[];
+    /**
+     * Optional click handler for citation pills. When set, citation
+     * pills are wired up; click writes the row ID to the chart's
+     * highlight Writable upstream so the embedding pans + table scrolls
+     * to that row. Pills are rendered regardless, but click is a no-op
+     * when this is unset.
+     */
+    onPillClick?: (rowId: RowID) => void;
   }
 
-  let { endpoint, context, initialPrompt = null, turns = $bindable([]) }: Props = $props();
+  let {
+    endpoint,
+    context,
+    initialPrompt = null,
+    turns = $bindable([]),
+    onPillClick,
+  }: Props = $props();
 
   let pending = $state(false);
   // svelte-ignore state_referenced_locally
@@ -139,6 +155,9 @@
           if (event.content_blocks) {
             match.resultBlocks = event.content_blocks;
           }
+          if (event.cited_rows) {
+            match.citedRows = event.cited_rows;
+          }
           match.isError = event.is_error;
         }
         break;
@@ -150,6 +169,33 @@
       case "done":
         break;
     }
+  }
+
+  /**
+   * Aggregate citations across every tool call in this assistant turn,
+   * de-duplicated, preserving first-seen order. Used to render a single
+   * "Sources:" pill row at the end of the turn rather than one per tool.
+   */
+  function collectCitedRows(tools: ChatToolCall[]): RowID[] {
+    const out: RowID[] = [];
+    const seen = new Set<string>();
+    for (const tool of tools) {
+      if (!tool.citedRows) continue;
+      for (const id of tool.citedRows) {
+        // RowID is `any` in the codebase; stringify for dedup so we
+        // handle numeric and string IDs uniformly without surprises.
+        const key = String(id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(id);
+      }
+    }
+    return out;
+  }
+
+  function pillLabel(id: RowID): string {
+    const s = String(id);
+    return s.length > 10 ? s.slice(0, 10) + "…" : s;
   }
 
   function onTextareaKeydown(e: KeyboardEvent) {
@@ -256,6 +302,22 @@
                 {@html renderMarkdown(turn.text)}
               </div>
             {/if}
+            {#if collectCitedRows(turn.tools).length > 0}
+              <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                <span class="select-none">Sources:</span>
+                {#each collectCitedRows(turn.tools) as rowId, idx (idx)}
+                  <button
+                    type="button"
+                    class="chat-source-pill font-mono"
+                    title={String(rowId)}
+                    onclick={() => onPillClick?.(rowId)}
+                    disabled={!onPillClick}
+                  >
+                    {pillLabel(rowId)}
+                  </button>
+                {/each}
+              </div>
+            {/if}
             {#if pending && i === turns.length - 1 && turn.text === "" && turn.tools.length === 0}
               <Spinner status="Thinking…" />
             {/if}
@@ -298,5 +360,40 @@
     margin: 0.25rem 0;
     object-fit: contain;
     cursor: zoom-in;
+  }
+
+  /* Citation pills — small clickable badges in the "Sources:" footer.
+     Click handler upstream writes to the chart's highlight Writable,
+     which animates the embedding view to the point and scrolls the
+     Instances table to the row. */
+  .chat-source-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.0625rem 0.4rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: rgb(248 250 252); /* slate-50 */
+    color: rgb(51 65 85); /* slate-700 */
+    font-size: 0.7rem;
+    line-height: 1.1;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  .chat-source-pill:hover:not(:disabled) {
+    background: rgb(226 232 240); /* slate-200 */
+    border-color: rgb(148 163 184); /* slate-400 */
+  }
+  .chat-source-pill:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+  :global(.dark) .chat-source-pill {
+    border-color: rgb(51 65 85); /* slate-700 */
+    background: rgb(30 41 59); /* slate-800 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  :global(.dark) .chat-source-pill:hover:not(:disabled) {
+    background: rgb(51 65 85); /* slate-700 */
+    border-color: rgb(100 116 139); /* slate-500 */
   }
 </style>

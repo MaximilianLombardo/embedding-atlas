@@ -1,6 +1,12 @@
 # Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
-from embedding_atlas.chat import _build_system_prompt
+import json
+
+from embedding_atlas.chat import (
+    CITED_ROWS_CAP,
+    _build_system_prompt,
+    _extract_cited_rows,
+)
 
 
 def _prompt(sample):
@@ -66,3 +72,68 @@ def test_title_only_uses_bold_quote():
 def test_case_insensitive_detection():
     prompt = _prompt([{"DOI": "10.1/x", "Title": "T"}])
     assert "https://doi.org/{doi}" in prompt
+
+
+# ─── _extract_cited_rows ─────────────────────────────────────────────────
+
+
+def test_cited_rows_from_local_sql_envelope():
+    payload = json.dumps(
+        {
+            "rows": [
+                {"id": 1, "text": "a"},
+                {"id": 2, "text": "b"},
+                {"id": 3, "text": "c"},
+            ],
+            "row_count": 3,
+            "truncated": False,
+        }
+    )
+    assert _extract_cited_rows(payload, "id") == [1, 2, 3]
+
+
+def test_cited_rows_from_bare_array():
+    payload = json.dumps([{"row_id": "x"}, {"row_id": "y"}])
+    assert _extract_cited_rows(payload, "row_id") == ["x", "y"]
+
+
+def test_cited_rows_dedupes_preserving_order():
+    payload = json.dumps({"rows": [{"id": 1}, {"id": 2}, {"id": 1}, {"id": 3}]})
+    assert _extract_cited_rows(payload, "id") == [1, 2, 3]
+
+
+def test_cited_rows_caps_at_limit():
+    payload = json.dumps(
+        {"rows": [{"id": i} for i in range(CITED_ROWS_CAP + 5)]}
+    )
+    extracted = _extract_cited_rows(payload, "id")
+    assert len(extracted) == CITED_ROWS_CAP
+    assert extracted[0] == 0
+
+
+def test_cited_rows_empty_when_id_column_absent():
+    payload = json.dumps({"rows": [{"text": "hi"}]})
+    assert _extract_cited_rows(payload, "id") == []
+
+
+def test_cited_rows_empty_when_no_id_column_configured():
+    payload = json.dumps({"rows": [{"id": 1}]})
+    assert _extract_cited_rows(payload, None) == []
+
+
+def test_cited_rows_empty_for_plain_text():
+    assert _extract_cited_rows("Just a text answer.", "id") == []
+
+
+def test_cited_rows_empty_for_invalid_json():
+    assert _extract_cited_rows("{not json", "id") == []
+
+
+def test_cited_rows_empty_for_non_string_content():
+    assert _extract_cited_rows(None, "id") == []
+    assert _extract_cited_rows([{"id": 1}], "id") == []
+
+
+def test_cited_rows_empty_when_rows_missing():
+    payload = json.dumps({"row_count": 0})
+    assert _extract_cited_rows(payload, "id") == []
