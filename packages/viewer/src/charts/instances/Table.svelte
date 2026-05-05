@@ -275,8 +275,16 @@
     });
   }
 
-  /** Imperative scroll target, used by animateToPoint. */
+  /** Imperative scroll target, used by animateToPoint and reset-on-sort. */
   export function scrollToIndex(index: number, align: "start" | "center" | "end" = "center"): void {
+    // For index=0 we set scrollTop directly: when the loader is in
+    // the middle of a rebuild (params change), totalCount may
+    // momentarily be 0 and virtualizer.scrollToIndex would have
+    // nothing to scroll to. The DOM scroll has no such constraint.
+    if (index === 0 && align === "start") {
+      if (scrollEl) scrollEl.scrollTop = 0;
+      return;
+    }
     virtualizer?.scrollToIndex(index, { align });
   }
 </script>
