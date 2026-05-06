@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import { get } from "svelte/store";
 
   import { screenshot } from "../utils/screenshot.js";
@@ -20,17 +21,27 @@
     console.trace("Error happened in chart with spec", props.spec, props.error);
   }
 
-  $effect(() =>
-    props.registerDelegate?.({
-      screenshot: async (options) => {
-        let colorScheme = get(props.context.colorScheme);
-        return await screenshot(container, {
-          ...options,
-          backgroundColor: colorScheme == "dark" ? "#000000" : "#ffffff",
-        });
-      },
-    }),
-  );
+  // Register the screenshot delegate once on mount. The screenshot
+  // callback closes over `container` and reads `colorScheme` lazily at
+  // invocation time, so re-registering on every prop change is wasted
+  // work — and `props.registerDelegate` itself receives a fresh inline
+  // arrow each frame from `LayoutView.svelte`'s chartView snippet, so
+  // tracking it would cause this effect to re-fire on every animation
+  // frame during layout transitions (chart show/hide etc.). `untrack`
+  // breaks that cascade.
+  $effect(() => {
+    return untrack(() =>
+      props.registerDelegate?.({
+        screenshot: async (options) => {
+          let colorScheme = get(props.context.colorScheme);
+          return await screenshot(container, {
+            ...options,
+            backgroundColor: colorScheme == "dark" ? "#000000" : "#ffffff",
+          });
+        },
+      }),
+    );
+  });
 </script>
 
 <div
