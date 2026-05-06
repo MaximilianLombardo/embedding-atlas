@@ -3,6 +3,7 @@
   import { debounce } from "@embedding-atlas/utils";
   import { Selection } from "@uwdata/mosaic-core";
   import { onMount, setContext } from "svelte";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { writable } from "svelte/store";
   import { scale } from "svelte/transition";
 
@@ -412,21 +413,26 @@
     }),
   );
 
-  let chartDelegates = new Map<string, Set<ChartDelegate>>();
-  // Reactive tick bumped on register/unregister so $derived reads see
-  // delegate-set changes — Map identity stays stable, so plain $state
-  // wouldn't notice contents-only mutations.
-  let chartDelegatesTick = $state(0);
+  // SvelteMap so add/delete on the inner Sets propagates reactivity
+  // to `chartSettingsGroups` below. The outer type is still a plain
+  // Map<…> since `provideModelContext` consumes it that way (SvelteMap
+  // extends Map, so the contract is preserved for the model-context
+  // path which doesn't need reactivity).
+  let chartDelegates = new SvelteMap<string, Set<ChartDelegate>>();
 
   function registerChartDelegate(id: string, delegate: ChartDelegate): () => void {
-    if (!chartDelegates.has(id)) {
-      chartDelegates.set(id, new Set());
+    let set = chartDelegates.get(id);
+    if (!set) {
+      // Wrap the inner Set in a SvelteSet so Set.add/delete notifies
+      // readers of `chartSettingsGroups`. Without this the derived
+      // would only re-run when the outer Map changes (i.e. on first
+      // delegate per id), missing later registrations on the same id.
+      set = new SvelteSet<ChartDelegate>();
+      chartDelegates.set(id, set);
     }
-    chartDelegates.get(id)!.add(delegate);
-    chartDelegatesTick++;
+    set.add(delegate);
     return () => {
       chartDelegates.get(id)?.delete(delegate);
-      chartDelegatesTick++;
     };
   }
 
@@ -434,7 +440,6 @@
   // Iteration order follows chart insertion order in `chartDelegates`,
   // which mirrors layout order.
   let chartSettingsGroups = $derived.by(() => {
-    void chartDelegatesTick;
     const groups: { key: string; title: string; content: import("svelte").Snippet }[] = [];
     let n = 0;
     for (const [id, set] of chartDelegates) {

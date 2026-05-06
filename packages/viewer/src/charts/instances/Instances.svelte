@@ -355,11 +355,21 @@
   // itself is defined in the template below; it captures the column
   // state + handlers via closure, so it stays in sync with this
   // chart's state.
+  //
+  // `registerDelegate` is an inline arrow in `LayoutView.svelte` and so
+  // gets a fresh identity on every layout render. Reading it through
+  // `untrack` keeps this effect from re-firing (and clobbering the
+  // registration) when the prop's identity churns for unrelated
+  // reasons. We re-register only when the title changes — which is the
+  // only piece the menu reads back at iteration time.
   $effect(() => {
-    if (!registerDelegate) return;
-    return registerDelegate({
-      settingsTitle,
-      settingsContent: tableSettings,
+    void settingsTitle;
+    return untrack(() => {
+      if (!registerDelegate) return;
+      return registerDelegate({
+        settingsTitle,
+        settingsContent: tableSettings,
+      });
     });
   });
 </script>
