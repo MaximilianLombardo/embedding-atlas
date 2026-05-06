@@ -31,14 +31,13 @@
   import { EmbeddingViewMosaic } from "@embedding-atlas/component/svelte";
   import { cubicOut } from "svelte/easing";
 
-  import FilteredCount from "../../views/FilteredCount.svelte";
   import Button from "../../widgets/Button.svelte";
   import PopupButton from "../../widgets/PopupButton.svelte";
   import Select from "../../widgets/Select.svelte";
   import Slider from "../../widgets/Slider.svelte";
   import Legend from "./Legend.svelte";
 
-  import { IconClose, IconSettings } from "../../assets/icons.js";
+  import { IconSettings } from "../../assets/icons.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
   import { resolveChartTheme } from "../common/theme.js";
@@ -173,18 +172,6 @@
     // Start animation and show tooltip.
     startViewportAnimation({ x: x, y: y, scale: scale });
     tooltip = identifier;
-  }
-
-  // Clear every active cross-filter clause. Mirrors `resetFilter` in
-  // EmbeddingAtlas.svelte — it iterates the global Selection and asks
-  // each source to reset its UI before nulling out the clause, so
-  // brushes/checkboxes in other charts visually go back to default.
-  function resetFilter() {
-    for (let item of context.filter.clauses) {
-      let source = item.source as any;
-      source?.reset?.();
-      context.filter.update({ ...item, value: null, predicate: null });
-    }
   }
 
   let currentViewportAnimation: number | null;
@@ -373,23 +360,5 @@
         </div>
       </PopupButton>
     </div>
-  </div>
-  <!-- Bottom-right status pill: live filtered/total point count plus a
-       quick clear-filters button. Sits on top of the embedding canvas
-       so the data context is right where the eye lands. Mirrors the
-       backdrop styling of the legend / settings overlays for visual
-       consistency. -->
-  <div
-    class="absolute right-0 bottom-0 m-2 px-2 py-1 rounded-md bg-white/75 dark:bg-black/75 backdrop-blur-sm flex items-center gap-1 pointer-events-auto text-sm"
-  >
-    <FilteredCount coordinator={context.coordinator} filter={context.filter} table={context.table} />
-    <button
-      type="button"
-      title="Clear filters"
-      onclick={resetFilter}
-      class="rounded flex items-center p-0.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-    >
-      <IconClose class="w-4 h-4" />
-    </button>
   </div>
 </div>
