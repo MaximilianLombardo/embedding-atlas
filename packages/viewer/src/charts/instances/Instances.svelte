@@ -35,6 +35,9 @@
   import Table from "./Table.svelte";
 
   import { IconCardView, IconTableView } from "../../assets/icons.js";
+  import { predicateToString } from "../../utils/database.js";
+  import { downloadBuffer } from "../../utils/download.js";
+  import { exportMosaicSelection } from "../../utils/mosaic_exporter.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
   import {
@@ -281,6 +284,19 @@
     else next[column] = false;
     columnState = { ...columnState, visibility: next };
   }
+
+  // CSV export — currently-filtered rows only. Reuses the same
+  // exporter as the EmbeddingAtlas-level "Export selection" feature
+  // (see app/FileViewer.svelte:159). Predicate string comes from
+  // context.filter.predicate(null), which composes every active
+  // selection clause across all charts. Custom-spec.query mode
+  // (where predicate semantics differ) skips this — we hide the
+  // menu item below.
+  async function handleExportCsv() {
+    const predicate = predicateToString(context.filter.predicate(null) as any);
+    const [bytes, name] = await exportMosaicSelection(context.coordinator, context.table, predicate, "csv");
+    downloadBuffer(bytes, name);
+  }
 </script>
 
 <div
@@ -302,6 +318,7 @@
           columns={loader.columns}
           visibility={columnState.visibility}
           onToggleVisibility={handleToggleVisibility}
+          onExportCsv={spec.query == null ? handleExportCsv : undefined}
         />
       {/if}
       <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
