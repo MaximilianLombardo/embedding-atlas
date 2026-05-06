@@ -456,6 +456,15 @@
     return groups;
   });
 
+  // Selected settings tab (0 = Global, 1..N = chart-contributed groups).
+  // Persists across menu open/close within a session; resets to Global
+  // if the previously selected chart group is no longer present.
+  let activeSettingsTab = $state(0);
+  $effect(() => {
+    const max = chartSettingsGroups.length;
+    if (activeSettingsTab > max) activeSettingsTab = 0;
+  });
+
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
   onMount(() => {
@@ -659,67 +668,56 @@
             />
           {/if}
           <PopupButton icon={IconSettings} title="Options">
-            <div class="min-w-[420px] flex flex-col gap-4">
-              <!-- Global group: applies to the whole atlas. -->
-              <section class="flex flex-col gap-2">
-                <h3 class="text-slate-700 dark:text-slate-200 font-semibold select-none">Global</h3>
-                {#if columns.length > 0}
-                  <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
-                  <ColumnStylePicker
-                    columns={columns}
-                    styles={$resolvedColumnStyles}
-                    onStylesChange={(value) => {
-                      columnStyles = value;
-                    }}
-                  />
+            <div class="min-w-[420px] flex flex-col">
+              <!-- Tab bar: Global is always tab 0; chart-contributed
+                   groups follow in layout order. Underline marks the
+                   active tab. The bar scrolls horizontally if many
+                   charts contribute groups so the popover width stays
+                   bounded. -->
+              <div
+                class="flex gap-1 border-b border-slate-200 dark:border-slate-700 -mx-3 px-3 mb-3 overflow-x-auto"
+              >
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm whitespace-nowrap border-b-2 -mb-px transition focus:outline-none"
+                  class:border-blue-500={activeSettingsTab === 0}
+                  class:text-slate-700={activeSettingsTab === 0}
+                  class:dark:text-slate-100={activeSettingsTab === 0}
+                  class:border-transparent={activeSettingsTab !== 0}
+                  class:text-slate-500={activeSettingsTab !== 0}
+                  class:dark:text-slate-400={activeSettingsTab !== 0}
+                  class:hover:text-slate-700={activeSettingsTab !== 0}
+                  class:dark:hover:text-slate-200={activeSettingsTab !== 0}
+                  onclick={() => (activeSettingsTab = 0)}>Global</button
+                >
+                {#each chartSettingsGroups as group, i (group.key)}
+                  {@const tabIndex = i + 1}
+                  <button
+                    type="button"
+                    class="px-3 py-1.5 text-sm whitespace-nowrap border-b-2 -mb-px transition focus:outline-none"
+                    class:border-blue-500={activeSettingsTab === tabIndex}
+                    class:text-slate-700={activeSettingsTab === tabIndex}
+                    class:dark:text-slate-100={activeSettingsTab === tabIndex}
+                    class:border-transparent={activeSettingsTab !== tabIndex}
+                    class:text-slate-500={activeSettingsTab !== tabIndex}
+                    class:dark:text-slate-400={activeSettingsTab !== tabIndex}
+                    class:hover:text-slate-700={activeSettingsTab !== tabIndex}
+                    class:dark:hover:text-slate-200={activeSettingsTab !== tabIndex}
+                    onclick={() => (activeSettingsTab = tabIndex)}>{group.title}</button
+                  >
+                {/each}
+              </div>
+              <!-- Tab body: only the selected tab's content renders. -->
+              <div class="flex flex-col gap-2">
+                {#if activeSettingsTab === 0}
+                  {@render globalSettings()}
+                {:else}
+                  {@const group = chartSettingsGroups[activeSettingsTab - 1]}
+                  {#if group}
+                    {@render group.content()}
+                  {/if}
                 {/if}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
-                <div class="flex flex-col gap-2">
-                  <ActionButton
-                    icon={IconBraces}
-                    label="Copy State"
-                    title="Copy the current Embedding Atlas state as JSON to clipboard."
-                    class="w-48"
-                    onClick={onCopyState}
-                  />
-                </div>
-                {#if onExportApplication}
-                  <div class="flex flex-col gap-2">
-                    <ActionButton
-                      icon={IconDownload}
-                      label="Export Application"
-                      title="Download a self-contained static web application"
-                      class="w-48"
-                      onClick={onExportApplication}
-                    />
-                  </div>
-                {/if}
-                {#if mcpStatus}
-                  <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
-                  <div class="flex flex-none gap-2 select-none items-center">
-                    {#if mcpStatus == "connecting"}
-                      <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
-                      Connecting...
-                    {:else if mcpStatus == "connected"}
-                      <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                      Connected
-                    {:else if mcpStatus == "closed" || mcpStatus == "error"}
-                      <div class="w-3 h-3 rounded-full bg-red-500"></div>
-                      Error or server closed connection
-                    {/if}
-                  </div>
-                {/if}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
-                <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
-              </section>
-              <!-- Chart-contributed groups: each chart with chart-scoped
-                   settings registers a snippet via ChartDelegate.settingsContent. -->
-              {#each chartSettingsGroups as group (group.key)}
-                <section class="flex flex-col gap-2">
-                  <h3 class="text-slate-700 dark:text-slate-200 font-semibold select-none">{group.title}</h3>
-                  {@render group.content()}
-                </section>
-              {/each}
+              </div>
             </div>
           </PopupButton>
         </div>
@@ -752,3 +750,52 @@
   {/if}
 </div>
 <svelte:window onkeydown={onWindowKeydown} />
+
+{#snippet globalSettings()}
+  {#if columns.length > 0}
+    <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
+    <ColumnStylePicker
+      columns={columns}
+      styles={$resolvedColumnStyles}
+      onStylesChange={(value) => {
+        columnStyles = value;
+      }}
+    />
+  {/if}
+  <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
+  <div class="flex flex-col gap-2">
+    <ActionButton
+      icon={IconBraces}
+      label="Copy State"
+      title="Copy the current Embedding Atlas state as JSON to clipboard."
+      class="w-48"
+      onClick={onCopyState}
+    />
+    {#if onExportApplication}
+      <ActionButton
+        icon={IconDownload}
+        label="Export Application"
+        title="Download a self-contained static web application"
+        class="w-48"
+        onClick={onExportApplication}
+      />
+    {/if}
+  </div>
+  {#if mcpStatus}
+    <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
+    <div class="flex flex-none gap-2 select-none items-center">
+      {#if mcpStatus == "connecting"}
+        <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
+        Connecting...
+      {:else if mcpStatus == "connected"}
+        <div class="w-3 h-3 rounded-full bg-green-500"></div>
+        Connected
+      {:else if mcpStatus == "closed" || mcpStatus == "error"}
+        <div class="w-3 h-3 rounded-full bg-red-500"></div>
+        Error or server closed connection
+      {/if}
+    </div>
+  {/if}
+  <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
+  <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
+{/snippet}
