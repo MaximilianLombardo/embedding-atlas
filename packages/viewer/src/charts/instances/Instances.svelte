@@ -356,7 +356,14 @@
           { value: "cards", icon: IconCardView, title: "Card view" },
         ]}
       />
-      {#if loader && loader.columns.length > 0}
+      {#if loader && loader.columns.length > 0 && viewMode === "table"}
+        <!--
+          Column menu is table-only. Cards has no headers/columns/pinning
+          surface, and the export item lives inside this menu — so when
+          we hide the menu in Cards mode, export goes with it. If we want
+          export reachable from Cards too, hoist it into its own toolbar
+          button (follow-up).
+        -->
         <ColumnMenu
           columns={orderedColumns}
           visibility={columnState.visibility}
