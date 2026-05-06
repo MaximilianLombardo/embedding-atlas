@@ -175,14 +175,17 @@
   let columnSizing = $derived<Record<string, number>>(table.getState().columnSizing ?? {});
 
   // Visible columns in render order. Driven directly off the
-  // parent-owned `columnState` rather than going through table-core's
-  // memoized `getVisibleLeafColumns` — the latter's reactivity through
-  // our state override is best-effort, while reading `columnState`
-  // here is unambiguously tracked by the $derived. Step C will layer
-  // in `columnState.order` to reorder.
-  let visibleColumns = $derived<string[]>(
-    loader.columns.filter((c) => columnState.visibility[c] !== false),
-  );
+  // parent-owned `columnState` — `order` first (for any columns
+  // still in the schema) then any schema-not-yet-in-order columns
+  // appended, finally filtered by visibility. Anything reactive on
+  // columnState OR loader.columns triggers re-render.
+  let visibleColumns = $derived.by<string[]>(() => {
+    const orderSet = new Set(columnState.order);
+    const fromOrder = columnState.order.filter((c) => loader.columns.includes(c));
+    const remaining = loader.columns.filter((c) => !orderSet.has(c));
+    const ordered = [...fromOrder, ...remaining];
+    return ordered.filter((c) => columnState.visibility[c] !== false);
+  });
 
   // Persist widths to localStorage on change (D4). Debounced because
   // columnResizeMode "onChange" fires per drag-frame; localStorage
@@ -324,8 +327,9 @@
   <table class="border-separate border-spacing-0 table-fixed w-full">
     <thead class="sticky top-0 z-10 bg-white dark:bg-black">
       <tr>
-        {#each (table.getHeaderGroups()[0]?.headers ?? []).filter((h) => visibleColumns.includes(h.column.id)) as header (header.id)}
-          {@const column = header.column.id}
+        {#each visibleColumns as column (column)}
+          {@const header = (table.getHeaderGroups()[0]?.headers ?? []).find((h) => h.column.id === column)}
+          {#if header}
           {@const sortDir = sortingState.find((s) => s.id === column)}
           {@const sortIsPrimary = sortingState[0]?.id === column}
           {@const width = columnSizing[column] ?? 150}
@@ -384,6 +388,7 @@
               <div class="w-[2px] h-5 bg-slate-400 dark:bg-slate-500 opacity-20 rounded-sm"></div>
             </div>
           </th>
+          {/if}
         {/each}
         <th class="border-b border-slate-200 dark:border-slate-800"></th>
       </tr>
