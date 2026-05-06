@@ -98,6 +98,23 @@ export function createSvelteTable<T extends RowData>(getOptionsFn: () => SvelteT
 
   const table = createTable<T>(buildResolved(getOptionsFn()));
 
+  // Make `table.getState()` and the methods derived from it reactive
+  // by routing them through the rune. Without this, calls inside
+  // `$derived` / `$effect` see the new snapshot (because we push it
+  // via setOptions on rune change) but Svelte doesn't *track* the
+  // rune as a dep, so consumers don't re-fire when the user toggles
+  // visibility / resizes a column / etc. The `void stateRune` access
+  // creates the dep on every call.
+  const originalGetState = table.getState;
+  table.getState = () => {
+    void stateRune;
+    return originalGetState();
+  };
+  // Methods that internally call getState pick up the dep automatically
+  // via the override above. getHeaderGroups, getVisibleLeafColumns,
+  // getLeftLeafColumns, getRowModel etc. all call into getState (or
+  // its memoized derivatives) so they too become reactive.
+
   // Seed the rune from `table.initialState` (which table-core
   // assembled by composing every feature's getInitialState) and
   // synchronously republish into options.state. Without the

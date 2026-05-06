@@ -29,6 +29,7 @@
 
   import SegmentedControl from "../../widgets/SegmentedControl.svelte";
   import Cards from "./Cards.svelte";
+  import ColumnMenu from "./ColumnMenu.svelte";
   import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
@@ -36,6 +37,11 @@
   import { IconCardView, IconTableView } from "../../assets/icons.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
+  import {
+    loadStoredColumnState,
+    saveStoredColumnState,
+    type StoredColumnState,
+  } from "./lib/use_column_state.svelte.js";
   import { WindowLoader } from "./lib/window_loader.svelte.js";
   import type { InstancesSpec, InstancesState } from "./types.js";
 
@@ -79,6 +85,14 @@
   // id — the table already had it on hand at click time, so re-fetching
   // would be wasted work.
   let detailRow = $state.raw<Record<string, any> | null>(null);
+
+  // Combined column state (visibility / order / pinning). Owned here
+  // so ColumnMenu can write directly while Table reflects it into
+  // table-core's controlled state. Initialized on the first time the
+  // loader's column list arrives — see the $effect below.
+  let columnState = $state<StoredColumnState>({ visibility: {}, order: [], pinning: { left: [] } });
+  let columnStateSeeded = false;
+  let columnStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Highlight subscription: legacy animateToPoint contract. When a
   // single new id enters the highlight set externally (e.g. an embedding
@@ -234,6 +248,39 @@
     if (row == null) return;
     detailRow = row;
   }
+
+  // Seed columnState from localStorage once we know the column list.
+  // Subsequent loader rebuilds (sort change, filter change) reuse the
+  // already-seeded state so user toggles don't reset.
+  $effect(() => {
+    const cols = loader?.columns ?? [];
+    if (columnStateSeeded || cols.length === 0) return;
+    columnState = loadStoredColumnState(context.table, cols);
+    columnStateSeeded = true;
+  });
+
+  // Persist columnState whenever it changes. Debounced because a flurry
+  // of toggles (e.g. "uncheck 5 columns") would otherwise cause one
+  // localStorage write per click. Important: read `columnState` BEFORE
+  // any early-return so Svelte tracks it as a dep on the very first
+  // run of this effect — otherwise the seeded guard would short the
+  // body and the dep would never register.
+  $effect(() => {
+    const snapshot = columnState;
+    if (!columnStateSeeded) return;
+    if (columnStateSaveTimer != null) clearTimeout(columnStateSaveTimer);
+    columnStateSaveTimer = setTimeout(() => {
+      saveStoredColumnState(context.table, snapshot);
+      columnStateSaveTimer = null;
+    }, 100);
+  });
+
+  function handleToggleVisibility(column: string) {
+    const next = { ...columnState.visibility };
+    if (next[column] === false) delete next[column];
+    else next[column] = false;
+    columnState = { ...columnState, visibility: next };
+  }
 </script>
 
 <div
@@ -250,6 +297,13 @@
           { value: "cards", icon: IconCardView, title: "Card view" },
         ]}
       />
+      {#if loader && loader.columns.length > 0}
+        <ColumnMenu
+          columns={loader.columns}
+          visibility={columnState.visibility}
+          onToggleVisibility={handleToggleVisibility}
+        />
+      {/if}
       <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
     </div>
     {#if loader}
@@ -271,6 +325,7 @@
           highlight={$highlight}
           sort={spec.sort}
           tableName={context.table}
+          bind:columnState={columnState}
           onRowClick={handleRowClick}
           onRowDoubleClick={handleRowDoubleClick}
           onSortChange={(value) => onSpecChange({ sort: value })}
