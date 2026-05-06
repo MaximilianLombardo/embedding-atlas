@@ -18,13 +18,15 @@
 <script lang="ts">
   import PopupButton from "../../widgets/PopupButton.svelte";
 
-  import { IconCheck, IconExport, IconMenu } from "../../assets/icons.js";
+  import { IconCheck, IconExport, IconMenu, IconPin, IconPinOff } from "../../assets/icons.js";
 
   interface Props {
     /** All columns in their *current* (rendered) order. */
     columns: string[];
     /** Map of column → visibility (true = visible). Missing keys default to true. */
     visibility: Record<string, boolean>;
+    /** Set of columns pinned to the left (in pin order). */
+    pinnedLeft: string[];
     /** Toggle a single column's visibility. */
     onToggleVisibility: (column: string) => void;
     /**
@@ -32,6 +34,8 @@
      * Parent updates its columnState; the table re-renders accordingly.
      */
     onReorder: (newOrder: string[]) => void;
+    /** Pin / unpin a column on the left. */
+    onTogglePinLeft: (column: string) => void;
     /**
      * Trigger a CSV export of currently-filtered rows. Parent runs
      * the Mosaic COPY query and the browser download. When undefined,
@@ -41,10 +45,21 @@
     onExportCsv?: () => void;
   }
 
-  let { columns, visibility, onToggleVisibility, onReorder, onExportCsv }: Props = $props();
+  let {
+    columns,
+    visibility,
+    pinnedLeft,
+    onToggleVisibility,
+    onReorder,
+    onTogglePinLeft,
+    onExportCsv,
+  }: Props = $props();
 
   function isVisible(col: string): boolean {
     return visibility[col] !== false;
+  }
+  function isPinnedLeft(col: string): boolean {
+    return pinnedLeft.includes(col);
   }
 
   // Drag-reorder state. Held locally; on drop we compute the new
@@ -136,6 +151,20 @@
             {/if}
           </span>
           <span class="truncate">{col}</span>
+        </button>
+        <button
+          type="button"
+          class="flex-shrink-0 p-1 rounded hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-400 dark:text-slate-500"
+          class:text-blue-500={isPinnedLeft(col)}
+          class:dark:text-blue-400={isPinnedLeft(col)}
+          onclick={() => onTogglePinLeft(col)}
+          title={isPinnedLeft(col) ? "Unpin from left" : "Pin to left"}
+        >
+          {#if isPinnedLeft(col)}
+            <IconPin />
+          {:else}
+            <IconPinOff />
+          {/if}
         </button>
       </div>
     {/each}

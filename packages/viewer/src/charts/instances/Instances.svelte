@@ -289,6 +289,12 @@
     columnState = { ...columnState, order: newOrder };
   }
 
+  function handleTogglePinLeft(column: string) {
+    const left = columnState.pinning.left;
+    const next = left.includes(column) ? left.filter((c) => c !== column) : [...left, column];
+    columnState = { ...columnState, pinning: { left: next } };
+  }
+
   // Compute the rendered column order for the menu: stored order
   // first (for any columns still in the schema), then any
   // schema-but-not-stored columns appended. This gives the menu and
@@ -335,8 +341,10 @@
         <ColumnMenu
           columns={orderedColumns}
           visibility={columnState.visibility}
+          pinnedLeft={columnState.pinning.left}
           onToggleVisibility={handleToggleVisibility}
           onReorder={handleReorder}
+          onTogglePinLeft={handleTogglePinLeft}
           onExportCsv={spec.query == null ? handleExportCsv : undefined}
         />
       {/if}
