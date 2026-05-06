@@ -23,7 +23,6 @@
 
   import {
     IconBraces,
-    IconClose,
     IconDarkMode,
     IconDashboardLayout,
     IconDownload,
@@ -580,59 +579,12 @@
             <div class="text-slate-500 dark:text-slate-400">Embedding Atlas</div>
           {/if}
         </div>
-        <!-- Right side -->
-        <div
-          class="flex flex-none gap-2 items-center pl-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"
-        >
-          <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
-          <div class="flex flex-row items-center">
-            <button
-              title="Clear filters"
-              onclick={resetFilter}
-              class="rounded-md flex select-none items-center p-1.5 text-slate-400 dark:text-slate-500 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-            >
-              <IconClose class="w-5 h-5" />
-            </button>
-
-            {#if onExportSelection}
-              <PopupButton title="Export Selection">
-                {#snippet button({ visible, toggle })}
-                  <button
-                    title="Export Selection"
-                    onclick={toggle}
-                    class="rounded-md px-1.5 py-1.5 flex select-none items-center focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-                    class:text-slate-400={!visible}
-                    class:dark:text-slate-500={!visible}
-                  >
-                    <IconExport class="w-5 h-5" />
-                  </button>
-                {/snippet}
-                <div class="min-w-[420px] flex flex-col gap-2">
-                  <div class="flex flex-row gap-2">
-                    <ActionButton
-                      icon={IconExport}
-                      label="Export Selection"
-                      title="Export the selected points"
-                      class="w-48"
-                      onClick={() => onExportSelection(currentPredicate(), exportFormat)}
-                    />
-                    <Select
-                      label="Format"
-                      value={exportFormat}
-                      onChange={(v) => (exportFormat = v)}
-                      options={[
-                        { value: "parquet", label: "Parquet" },
-                        { value: "jsonl", label: "JSONL" },
-                        { value: "json", label: "JSON" },
-                        { value: "csv", label: "CSV" },
-                      ]}
-                    />
-                  </div>
-                </div>
-              </PopupButton>
-            {/if}
-          </div>
-        </div>
+        <!-- Filter status (count + clear) and Export Selection both
+             moved out of the top toolbar:
+               - FilteredCount + clear-X live in the embedding pane's
+                 bottom-right overlay (`charts/embedding/Embedding.svelte`).
+               - Export Selection lives in the Global → Export tab of
+                 the settings popover above. -->
         <div class="flex flex-none flex-row gap-2">
           <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
             {#key layout}
@@ -779,6 +731,31 @@
         class="w-48"
         onClick={onExportApplication}
       />
+    {/if}
+    {#if onExportSelection}
+      <!-- Export selection: same controls that previously lived in the
+           top-toolbar pill — the action button + format picker. The
+           current cross-filter predicate is computed at click time. -->
+      <div class="flex flex-row gap-2">
+        <ActionButton
+          icon={IconExport}
+          label="Export Selection"
+          title="Export rows matching the active filter"
+          class="w-48"
+          onClick={() => onExportSelection!(currentPredicate(), exportFormat)}
+        />
+        <Select
+          label="Format"
+          value={exportFormat}
+          onChange={(v) => (exportFormat = v)}
+          options={[
+            { value: "parquet", label: "Parquet" },
+            { value: "jsonl", label: "JSONL" },
+            { value: "json", label: "JSON" },
+            { value: "csv", label: "CSV" },
+          ]}
+        />
+      </div>
     {/if}
   </div>
   {#if mcpStatus}
