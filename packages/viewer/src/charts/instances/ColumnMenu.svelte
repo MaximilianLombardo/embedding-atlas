@@ -1,14 +1,19 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <!--
   Per-table column menu. Triggered by an IconMenu button in the
-  Instances toolbar. Shows every column with a visibility checkbox.
-  Steps C/D will add drag-handles for reorder and pin/unpin toggles
-  in this same panel.
+  Instances toolbar. Per-row controls:
+    - drag handle on the left to reorder
+    - visibility checkbox
+    - column name
+  Plus an "Export CSV" footer item.
 
-  Visibility commits on click directly to a `onToggleVisibility(col)`
-  callback — the parent owns column state, so we don't try to reach
-  into it from here. Same for the Export CSV item: parent does the
-  Mosaic call + download.
+  Drag-reorder lives here (not on the table headers) because HTML5
+  DnD on a flex list is tractable while DnD on `<th>` elements
+  fights browser drop-position quirks. Headers display the order
+  computed from this menu.
+
+  All edits flow through callbacks back to the parent (`Instances`),
+  which owns columnState; we don't mutate state in place from here.
 -->
 <script lang="ts">
   import PopupButton from "../../widgets/PopupButton.svelte";
@@ -23,6 +28,11 @@
     /** Toggle a single column's visibility. */
     onToggleVisibility: (column: string) => void;
     /**
+     * Called after a drag-drop reorder with the full new column order.
+     * Parent updates its columnState; the table re-renders accordingly.
+     */
+    onReorder: (newOrder: string[]) => void;
+    /**
      * Trigger a CSV export of currently-filtered rows. Parent runs
      * the Mosaic COPY query and the browser download. When undefined,
      * the Export item is hidden (e.g. for custom-spec.query mode
@@ -31,43 +41,103 @@
     onExportCsv?: () => void;
   }
 
-  let { columns, visibility, onToggleVisibility, onExportCsv }: Props = $props();
+  let { columns, visibility, onToggleVisibility, onReorder, onExportCsv }: Props = $props();
 
   function isVisible(col: string): boolean {
     return visibility[col] !== false;
   }
+
+  // Drag-reorder state. Held locally; on drop we compute the new
+  // order array and hand it to the parent in one shot.
+  let draggingFrom = $state<number | null>(null);
+  let draggingOver = $state<number | null>(null);
+
+  function onDragStart(index: number, e: DragEvent) {
+    draggingFrom = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      // Some browsers refuse to start DnD without a payload.
+      e.dataTransfer.setData("text/plain", columns[index]);
+    }
+  }
+
+  function onDragOver(index: number, e: DragEvent) {
+    if (draggingFrom == null || index === draggingFrom) return;
+    e.preventDefault();
+    draggingOver = index;
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  }
+
+  function onDrop(index: number, e: DragEvent) {
+    e.preventDefault();
+    if (draggingFrom == null || index === draggingFrom) {
+      draggingFrom = null;
+      draggingOver = null;
+      return;
+    }
+    const next = columns.slice();
+    const [moved] = next.splice(draggingFrom, 1);
+    next.splice(index, 0, moved);
+    draggingFrom = null;
+    draggingOver = null;
+    onReorder(next);
+  }
+
+  function onDragEnd() {
+    draggingFrom = null;
+    draggingOver = null;
+  }
 </script>
 
 <PopupButton icon={IconMenu} title="Columns" anchor="left">
-  <div class="flex flex-col gap-1 max-h-[60vh] overflow-y-auto min-w-48">
+  <div class="flex flex-col gap-1 max-h-[60vh] overflow-y-auto min-w-56">
     <div class="text-xs font-medium text-slate-500 dark:text-slate-400 px-2 py-1">
       Columns ({columns.filter(isVisible).length}/{columns.length})
     </div>
-    {#each columns as col (col)}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <button
-        type="button"
-        class="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-left text-sm text-slate-700 dark:text-slate-200"
-        onclick={() => onToggleVisibility(col)}
+    {#each columns as col, i (col)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 group"
+        class:opacity-50={draggingFrom === i}
+        class:ring-1={draggingOver === i}
+        class:ring-blue-500={draggingOver === i}
+        draggable="true"
+        ondragstart={(e) => onDragStart(i, e)}
+        ondragover={(e) => onDragOver(i, e)}
+        ondrop={(e) => onDrop(i, e)}
+        ondragend={onDragEnd}
+        role="listitem"
       >
+        <!-- Drag handle: visual indicator the row is reorderable. -->
         <span
-          class="inline-flex items-center justify-center w-4 h-4 rounded border flex-shrink-0"
-          class:border-slate-400={isVisible(col)}
-          class:bg-blue-500={isVisible(col)}
-          class:dark:bg-blue-600={isVisible(col)}
-          class:border-blue-500={isVisible(col)}
-          class:dark:border-blue-600={isVisible(col)}
-          class:border-slate-300={!isVisible(col)}
-          class:dark:border-slate-600={!isVisible(col)}
+          class="text-slate-400 dark:text-slate-600 cursor-grab select-none flex-shrink-0 px-1 leading-none text-sm"
+          title="Drag to reorder">⋮⋮</span
         >
-          {#if isVisible(col)}
-            <span class="text-white text-xs leading-none">
-              <IconCheck />
-            </span>
-          {/if}
-        </span>
-        <span class="truncate">{col}</span>
-      </button>
+        <button
+          type="button"
+          class="flex items-center gap-2 flex-1 min-w-0 text-left text-sm text-slate-700 dark:text-slate-200"
+          onclick={() => onToggleVisibility(col)}
+        >
+          <span
+            class="inline-flex items-center justify-center w-4 h-4 rounded border flex-shrink-0"
+            class:border-slate-400={isVisible(col)}
+            class:bg-blue-500={isVisible(col)}
+            class:dark:bg-blue-600={isVisible(col)}
+            class:border-blue-500={isVisible(col)}
+            class:dark:border-blue-600={isVisible(col)}
+            class:border-slate-300={!isVisible(col)}
+            class:dark:border-slate-600={!isVisible(col)}
+          >
+            {#if isVisible(col)}
+              <span class="text-white text-xs leading-none">
+                <IconCheck />
+              </span>
+            {/if}
+          </span>
+          <span class="truncate">{col}</span>
+        </button>
+      </div>
     {/each}
     {#if onExportCsv}
       <div class="border-t border-slate-300 dark:border-slate-600 my-1"></div>

@@ -285,6 +285,24 @@
     columnState = { ...columnState, visibility: next };
   }
 
+  function handleReorder(newOrder: string[]) {
+    columnState = { ...columnState, order: newOrder };
+  }
+
+  // Compute the rendered column order for the menu: stored order
+  // first (for any columns still in the schema), then any
+  // schema-but-not-stored columns appended. This gives the menu and
+  // the table a single source of truth for "where does each column
+  // appear right now."
+  let orderedColumns = $derived.by(() => {
+    const cols = loader?.columns;
+    if (!cols) return [];
+    const orderSet = new Set(columnState.order);
+    const fromOrder = columnState.order.filter((c) => cols.includes(c));
+    const remaining = cols.filter((c) => !orderSet.has(c));
+    return [...fromOrder, ...remaining];
+  });
+
   // CSV export — currently-filtered rows only. Reuses the same
   // exporter as the EmbeddingAtlas-level "Export selection" feature
   // (see app/FileViewer.svelte:159). Predicate string comes from
@@ -315,9 +333,10 @@
       />
       {#if loader && loader.columns.length > 0}
         <ColumnMenu
-          columns={loader.columns}
+          columns={orderedColumns}
           visibility={columnState.visibility}
           onToggleVisibility={handleToggleVisibility}
+          onReorder={handleReorder}
           onExportCsv={spec.query == null ? handleExportCsv : undefined}
         />
       {/if}
