@@ -13,6 +13,8 @@
   drives Mosaic state — it's read-only.
 -->
 <script lang="ts">
+  import { fade, slide } from "svelte/transition";
+
   import TooltipContent from "../../views/TooltipContent.svelte";
 
   import { IconClose } from "../../assets/icons.js";
@@ -56,12 +58,16 @@
       if (e.target === e.currentTarget) onClose();
     }}
   >
-    <!-- Backdrop -->
-    <div class="absolute inset-0 bg-black/30 dark:bg-black/50"></div>
+    <!-- Backdrop fades in/out alongside the panel slide so the dismissal feels coordinated. -->
+    <div
+      class="absolute inset-0 bg-black/30 dark:bg-black/50"
+      transition:fade={{ duration: 150 }}
+    ></div>
 
-    <!-- Panel -->
+    <!-- Panel uses the same horizontal slide transition the chart sidebar uses (ListLayout.svelte). -->
     <div
       class="relative w-full max-w-md h-full bg-white dark:bg-slate-900 shadow-xl border-l border-slate-200 dark:border-slate-700 flex flex-col"
+      transition:slide={{ axis: "x", duration: 250 }}
     >
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-200 dark:border-slate-700">
         <div class="text-sm font-medium text-slate-700 dark:text-slate-200">Row details</div>
