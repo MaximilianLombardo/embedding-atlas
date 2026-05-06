@@ -3,16 +3,17 @@
   Per-table column menu. Triggered by an IconMenu button in the
   Instances toolbar. Shows every column with a visibility checkbox.
   Steps C/D will add drag-handles for reorder and pin/unpin toggles
-  in this same panel; Step B will add an "Export CSV" footer item.
+  in this same panel.
 
   Visibility commits on click directly to a `onToggleVisibility(col)`
-  callback — the parent owns table-core state, so we don't try to
-  reach into it from here.
+  callback — the parent owns column state, so we don't try to reach
+  into it from here. Same for the Export CSV item: parent does the
+  Mosaic call + download.
 -->
 <script lang="ts">
   import PopupButton from "../../widgets/PopupButton.svelte";
 
-  import { IconCheck, IconMenu } from "../../assets/icons.js";
+  import { IconCheck, IconExport, IconMenu } from "../../assets/icons.js";
 
   interface Props {
     /** All columns in their *current* (rendered) order. */
@@ -21,9 +22,16 @@
     visibility: Record<string, boolean>;
     /** Toggle a single column's visibility. */
     onToggleVisibility: (column: string) => void;
+    /**
+     * Trigger a CSV export of currently-filtered rows. Parent runs
+     * the Mosaic COPY query and the browser download. When undefined,
+     * the Export item is hidden (e.g. for custom-spec.query mode
+     * where the predicate set isn't well-defined).
+     */
+    onExportCsv?: () => void;
   }
 
-  let { columns, visibility, onToggleVisibility }: Props = $props();
+  let { columns, visibility, onToggleVisibility, onExportCsv }: Props = $props();
 
   function isVisible(col: string): boolean {
     return visibility[col] !== false;
@@ -61,5 +69,19 @@
         <span class="truncate">{col}</span>
       </button>
     {/each}
+    {#if onExportCsv}
+      <div class="border-t border-slate-300 dark:border-slate-600 my-1"></div>
+      <button
+        type="button"
+        class="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-left text-sm text-slate-700 dark:text-slate-200"
+        onclick={onExportCsv}
+        title="Export rows matching the current filter as CSV"
+      >
+        <span class="inline-flex items-center justify-center w-4 h-4 flex-shrink-0 text-slate-500 dark:text-slate-400">
+          <IconExport />
+        </span>
+        <span>Export CSV</span>
+      </button>
+    {/if}
   </div>
 </PopupButton>
