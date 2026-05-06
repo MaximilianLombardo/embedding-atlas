@@ -174,18 +174,46 @@
   // which the runes wrapper hooks into the state rune.
   let columnSizing = $derived<Record<string, number>>(table.getState().columnSizing ?? {});
 
-  // Visible columns in render order. Driven directly off the
-  // parent-owned `columnState` — `order` first (for any columns
-  // still in the schema) then any schema-not-yet-in-order columns
-  // appended, finally filtered by visibility. Anything reactive on
-  // columnState OR loader.columns triggers re-render.
+  // Visible columns in render order. Pinned-left columns come first
+  // (in the order the user pinned them), then the rest of the
+  // current order with hidden columns dropped.
+  //
+  // Reactive on columnState (rune, bound from parent) and
+  // loader.columns; both trigger re-render.
   let visibleColumns = $derived.by<string[]>(() => {
+    const pinned = columnState.pinning.left.filter(
+      (c) => loader.columns.includes(c) && columnState.visibility[c] !== false,
+    );
+    const pinnedSet = new Set(pinned);
     const orderSet = new Set(columnState.order);
-    const fromOrder = columnState.order.filter((c) => loader.columns.includes(c));
-    const remaining = loader.columns.filter((c) => !orderSet.has(c));
-    const ordered = [...fromOrder, ...remaining];
-    return ordered.filter((c) => columnState.visibility[c] !== false);
+    const fromOrder = columnState.order.filter((c) => loader.columns.includes(c) && !pinnedSet.has(c));
+    const remaining = loader.columns.filter((c) => !orderSet.has(c) && !pinnedSet.has(c));
+    const tail = [...fromOrder, ...remaining].filter((c) => columnState.visibility[c] !== false);
+    return [...pinned, ...tail];
   });
+
+  // Cumulative left offset for pinned columns: paper_id at left:0,
+  // next pinned at paper_id_width, etc. Used by the sticky CSS in
+  // headers and cells. Non-pinned columns get null.
+  let pinnedLeftOffsets = $derived.by<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    let acc = 0;
+    for (const c of columnState.pinning.left) {
+      if (!loader.columns.includes(c) || columnState.visibility[c] === false) continue;
+      out[c] = acc;
+      acc += columnSizing[c] ?? 150;
+    }
+    return out;
+  });
+
+  function isPinnedLeft(column: string): boolean {
+    return column in pinnedLeftOffsets;
+  }
+  function isLastPinnedLeft(column: string): boolean {
+    if (!isPinnedLeft(column)) return false;
+    const pinned = Object.keys(pinnedLeftOffsets);
+    return pinned[pinned.length - 1] === column;
+  }
 
   // Persist widths to localStorage on change (D4). Debounced because
   // columnResizeMode "onChange" fires per drag-frame; localStorage
@@ -333,9 +361,20 @@
           {@const sortDir = sortingState.find((s) => s.id === column)}
           {@const sortIsPrimary = sortingState[0]?.id === column}
           {@const width = columnSizing[column] ?? 150}
+          {@const pinned = isPinnedLeft(column)}
+          {@const lastPinned = isLastPinnedLeft(column)}
           <th
             class="px-4 py-1.5 font-normal text-slate-400 dark:text-slate-500 border-b border-slate-200 dark:border-slate-800 whitespace-nowrap relative group {getAlignment(column)}"
+            class:sticky={pinned}
+            class:left-0={pinned}
+            class:bg-white={pinned}
+            class:dark:bg-black={pinned}
+            class:border-r-2={lastPinned}
+            class:border-r-slate-300={lastPinned}
+            class:dark:border-r-slate-700={lastPinned}
             style:width="{width}px"
+            style:left={pinned ? `${pinnedLeftOffsets[column]}px` : undefined}
+            style:z-index={pinned ? 20 : undefined}
           >
             <div class="flex gap-2 items-center">
               <div class="flex-1 truncate">{column}</div>
@@ -426,9 +465,19 @@
             }}
           >
             {#each visibleColumns as column (column)}
+              {@const pinned = isPinnedLeft(column)}
+              {@const lastPinned = isLastPinnedLeft(column)}
               <td
                 class="px-4 py-1 text-slate-500 dark:text-slate-400 align-middle truncate {getAlignment(column)}"
+                class:sticky={pinned}
+                class:left-0={pinned}
+                class:border-r-2={lastPinned}
+                class:border-r-slate-300={lastPinned}
+                class:dark:border-r-slate-700={lastPinned}
+                class:bg-inherit={pinned}
                 style:max-width="{columnSizing[column] ?? 150}px"
+                style:left={pinned ? `${pinnedLeftOffsets[column]}px` : undefined}
+                style:z-index={pinned ? 5 : undefined}
               >
                 <ContentRenderer value={row[column]} style={columnStyles[column]} formatter={columnFormatters[column]} />
               </td>
