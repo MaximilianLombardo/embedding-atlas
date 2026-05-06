@@ -413,16 +413,43 @@
   );
 
   let chartDelegates = new Map<string, Set<ChartDelegate>>();
+  // Reactive tick bumped on register/unregister so $derived reads see
+  // delegate-set changes — Map identity stays stable, so plain $state
+  // wouldn't notice contents-only mutations.
+  let chartDelegatesTick = $state(0);
 
   function registerChartDelegate(id: string, delegate: ChartDelegate): () => void {
     if (!chartDelegates.has(id)) {
       chartDelegates.set(id, new Set());
     }
     chartDelegates.get(id)!.add(delegate);
+    chartDelegatesTick++;
     return () => {
       chartDelegates.get(id)?.delete(delegate);
+      chartDelegatesTick++;
     };
   }
+
+  // Snippets contributed by charts to the page-level settings menu.
+  // Iteration order follows chart insertion order in `chartDelegates`,
+  // which mirrors layout order.
+  let chartSettingsGroups = $derived.by(() => {
+    void chartDelegatesTick;
+    const groups: { key: string; title: string; content: import("svelte").Snippet }[] = [];
+    let n = 0;
+    for (const [id, set] of chartDelegates) {
+      for (const d of set) {
+        if (d.settingsContent) {
+          groups.push({
+            key: `${id}:${n++}`,
+            title: d.settingsTitle ?? "Settings",
+            content: d.settingsContent,
+          });
+        }
+      }
+    }
+    return groups;
+  });
 
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
@@ -627,57 +654,67 @@
             />
           {/if}
           <PopupButton icon={IconSettings} title="Options">
-            <div class="min-w-[420px] flex flex-col gap-2">
-              <!-- Text style settings -->
-              {#if columns.length > 0}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
-                <ColumnStylePicker
-                  columns={columns}
-                  styles={$resolvedColumnStyles}
-                  onStylesChange={(value) => {
-                    columnStyles = value;
-                  }}
-                />
-              {/if}
-              <!-- Export -->
-              <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
-              <div class="flex flex-col gap-2">
-                <ActionButton
-                  icon={IconBraces}
-                  label="Copy State"
-                  title="Copy the current Embedding Atlas state as JSON to clipboard."
-                  class="w-48"
-                  onClick={onCopyState}
-                />
-              </div>
-              {#if onExportApplication}
+            <div class="min-w-[420px] flex flex-col gap-4">
+              <!-- Global group: applies to the whole atlas. -->
+              <section class="flex flex-col gap-2">
+                <h3 class="text-slate-700 dark:text-slate-200 font-semibold select-none">Global</h3>
+                {#if columns.length > 0}
+                  <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
+                  <ColumnStylePicker
+                    columns={columns}
+                    styles={$resolvedColumnStyles}
+                    onStylesChange={(value) => {
+                      columnStyles = value;
+                    }}
+                  />
+                {/if}
+                <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
                 <div class="flex flex-col gap-2">
                   <ActionButton
-                    icon={IconDownload}
-                    label="Export Application"
-                    title="Download a self-contained static web application"
+                    icon={IconBraces}
+                    label="Copy State"
+                    title="Copy the current Embedding Atlas state as JSON to clipboard."
                     class="w-48"
-                    onClick={onExportApplication}
+                    onClick={onCopyState}
                   />
                 </div>
-              {/if}
-              {#if mcpStatus}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
-                <div class="flex flex-none gap-2 select-none items-center">
-                  {#if mcpStatus == "connecting"}
-                    <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
-                    Connecting...
-                  {:else if mcpStatus == "connected"}
-                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                    Connected
-                  {:else if mcpStatus == "closed" || mcpStatus == "error"}
-                    <div class="w-3 h-3 rounded-full bg-red-500"></div>
-                    Error or server closed connection
-                  {/if}
-                </div>
-              {/if}
-              <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
-              <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
+                {#if onExportApplication}
+                  <div class="flex flex-col gap-2">
+                    <ActionButton
+                      icon={IconDownload}
+                      label="Export Application"
+                      title="Download a self-contained static web application"
+                      class="w-48"
+                      onClick={onExportApplication}
+                    />
+                  </div>
+                {/if}
+                {#if mcpStatus}
+                  <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
+                  <div class="flex flex-none gap-2 select-none items-center">
+                    {#if mcpStatus == "connecting"}
+                      <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
+                      Connecting...
+                    {:else if mcpStatus == "connected"}
+                      <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                      Connected
+                    {:else if mcpStatus == "closed" || mcpStatus == "error"}
+                      <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                      Error or server closed connection
+                    {/if}
+                  </div>
+                {/if}
+                <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
+                <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
+              </section>
+              <!-- Chart-contributed groups: each chart with chart-scoped
+                   settings registers a snippet via ChartDelegate.settingsContent. -->
+              {#each chartSettingsGroups as group (group.key)}
+                <section class="flex flex-col gap-2">
+                  <h3 class="text-slate-700 dark:text-slate-200 font-semibold select-none">{group.title}</h3>
+                  {@render group.content()}
+                </section>
+              {/each}
             </div>
           </PopupButton>
         </div>
