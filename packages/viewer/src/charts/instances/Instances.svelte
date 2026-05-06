@@ -27,7 +27,9 @@
   import { deepMemo } from "@embedding-atlas/utils";
   import { untrack } from "svelte";
 
-  import ColumnMenu from "./ColumnMenu.svelte";
+  import { IconDownload } from "../../assets/icons.js";
+  import ActionButton from "../../widgets/ActionButton.svelte";
+  import ColumnControls from "./ColumnControls.svelte";
   import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
@@ -58,6 +60,7 @@
     height,
     onSpecChange,
     onStateChange,
+    registerDelegate,
   }: ChartViewProps<InstancesSpec, InstancesState> = $props();
 
   // svelte-ignore state_referenced_locally
@@ -91,9 +94,10 @@
   let detailRow = $state.raw<Record<string, any> | null>(null);
 
   // Combined column state (visibility / order / pinning). Owned here
-  // so ColumnMenu can write directly while Table reflects it into
-  // table-core's controlled state. Initialized on the first time the
-  // loader's column list arrives — see the $effect below.
+  // so ColumnControls (in the page-level settings menu) can write
+  // directly while Table reflects it into table-core's controlled
+  // state. Initialized on the first time the loader's column list
+  // arrives — see the $effect below.
   let columnState = $state<StoredColumnState>({ visibility: {}, order: [], pinning: { left: [] } });
   let columnStateSeeded = false;
   let columnStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -341,32 +345,31 @@
     const [bytes, name] = await exportMosaicSelection(context.coordinator, context.table, predicate, "csv");
     downloadBuffer(bytes, name);
   }
+
+  // Per-chart settings group title shown in the page-level settings
+  // menu. When multiple Instances charts coexist in a layout, including
+  // `spec.title` keeps each group identifiable.
+  let settingsTitle = $derived(spec.title ? `Table — ${spec.title}` : "Table");
+
+  // Register a settings snippet with the page-level menu. The snippet
+  // itself is defined in the template below; it captures the column
+  // state + handlers via closure, so it stays in sync with this
+  // chart's state.
+  $effect(() => {
+    if (!registerDelegate) return;
+    return registerDelegate({
+      settingsTitle,
+      settingsContent: tableSettings,
+    });
+  });
 </script>
 
 <div
   class="w-full flex flex-col overflow-hidden rounded-md bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
   style:height={`${height ?? spec.defaultHeight ?? 500}px`}
 >
-  <div class="flex items-center justify-between px-2 py-0.5 border-b border-slate-200 dark:border-slate-700 gap-4">
-    <div class="flex items-center gap-4 flex-shrink-0">
-      {#if loader && loader.columns.length > 0}
-        <ColumnMenu
-          columns={orderedColumns}
-          visibility={columnState.visibility}
-          pinnedLeft={columnState.pinning.left}
-          onToggleVisibility={handleToggleVisibility}
-          onReorder={handleReorder}
-          onTogglePinLeft={handleTogglePinLeft}
-          onExportCsv={spec.query == null ? handleExportCsv : undefined}
-        />
-      {/if}
-      <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
-    </div>
-    {#if loader}
-      <div class="text-xs text-slate-400 dark:text-slate-500">
-        {loader.totalCount.toLocaleString()} rows
-      </div>
-    {/if}
+  <div class="flex items-center px-2 py-0.5 border-b border-slate-200 dark:border-slate-700 gap-4">
+    <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
   </div>
 
   <div class="flex-1 min-h-0 overflow-hidden">
@@ -409,3 +412,19 @@
     onClose={() => (detailRow = null)}
   />
 </div>
+
+{#snippet tableSettings()}
+  {#if loader && loader.columns.length > 0}
+    <ColumnControls
+      columns={orderedColumns}
+      visibility={columnState.visibility}
+      pinnedLeft={columnState.pinning.left}
+      onToggleVisibility={handleToggleVisibility}
+      onReorder={handleReorder}
+      onTogglePinLeft={handleTogglePinLeft}
+    />
+    {#if spec.query == null}
+      <ActionButton icon={IconDownload} label="Export CSV" class="w-48" onClick={handleExportCsv} />
+    {/if}
+  {/if}
+{/snippet}
