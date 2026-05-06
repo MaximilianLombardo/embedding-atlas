@@ -39,6 +39,7 @@
   import type { RowID } from "../chart.js";
   import { inferColumnFormatters } from "./infer_formatters.js";
   import { createSvelteTable } from "./lib/table_core.svelte.js";
+  import { type StoredColumnState } from "./lib/use_column_state.svelte.js";
   import { loadStoredWidths, saveStoredWidths } from "./lib/use_column_widths.svelte.js";
   import { WindowLoader } from "./lib/window_loader.svelte.js";
   import type { SortOrder } from "./types.js";
@@ -57,6 +58,13 @@
      * but reset cleanly across distinct datasets.
      */
     tableName: string;
+    /**
+     * Bidirectional column state (visibility / order / pinning).
+     * Owner is the parent (`Instances.svelte`) — Table reflects it
+     * into table-core's controlled state and writes user edits back
+     * via the bind. localStorage persistence also lives in the parent.
+     */
+    columnState?: StoredColumnState;
     onRowClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
     /**
      * Fired on row double-click. Receives the full row record so the
@@ -74,6 +82,7 @@
     highlight,
     sort,
     tableName,
+    columnState = $bindable({ visibility: {}, order: [], pinning: { left: [] } }),
     onRowClick,
     onRowDoubleClick,
     onSortChange,
@@ -126,6 +135,7 @@
       accessorKey: col,
       enableResizing: true,
       enableSorting: true,
+      enableHiding: true,
       size: defaultColumnWidths[col] ?? 150,
     })),
   );
@@ -153,10 +163,26 @@
     columnResizeMode: "onChange",
   }));
 
+  // Note: column visibility / order / pinning are driven by the
+  // parent-owned `columnState` directly (see `visibleColumns` below).
+  // table-core's matching state slices are unused — they require
+  // controlled-state plumbing for reactivity that doesn't pay off
+  // here, given we already have a clean Svelte 5 source of truth.
+
   // Live column width map. Kept as a $derived over table state so the
   // template can width-style cells reactively. Reads `table.getState()`
   // which the runes wrapper hooks into the state rune.
   let columnSizing = $derived<Record<string, number>>(table.getState().columnSizing ?? {});
+
+  // Visible columns in render order. Driven directly off the
+  // parent-owned `columnState` rather than going through table-core's
+  // memoized `getVisibleLeafColumns` — the latter's reactivity through
+  // our state override is best-effort, while reading `columnState`
+  // here is unambiguously tracked by the $derived. Step C will layer
+  // in `columnState.order` to reorder.
+  let visibleColumns = $derived<string[]>(
+    loader.columns.filter((c) => columnState.visibility[c] !== false),
+  );
 
   // Persist widths to localStorage on change (D4). Debounced because
   // columnResizeMode "onChange" fires per drag-frame; localStorage
@@ -180,6 +206,11 @@
       }
     };
   });
+
+  // Combined column state (visibility/order/pinning) persistence
+  // happens in the parent (Instances.svelte). The $effect above keeps
+  // `columnState` in sync with table-core, and the parent watches
+  // that for write-through.
 
   // Virtualizer: wraps virtual-core in a Svelte store. Subscribe and
   // mirror into a $state so $effect/$derived can read it the runes way.
@@ -293,7 +324,7 @@
   <table class="border-separate border-spacing-0 table-fixed w-full">
     <thead class="sticky top-0 z-10 bg-white dark:bg-black">
       <tr>
-        {#each table.getHeaderGroups()[0]?.headers ?? [] as header (header.id)}
+        {#each (table.getHeaderGroups()[0]?.headers ?? []).filter((h) => visibleColumns.includes(h.column.id)) as header (header.id)}
           {@const column = header.column.id}
           {@const sortDir = sortingState.find((s) => s.id === column)}
           {@const sortIsPrimary = sortingState[0]?.id === column}
@@ -359,13 +390,13 @@
     </thead>
     <tbody>
       {#if paddingTop > 0}
-        <tr style:height="{paddingTop}px"><td colspan={loader.columns.length + 1}></td></tr>
+        <tr style:height="{paddingTop}px"><td colspan={visibleColumns.length + 1}></td></tr>
       {/if}
       {#each virtualItems as vRow (vRow.key)}
         {@const row = loader.rowAt(vRow.index)}
         {#if row === "loading" || row === undefined}
           <tr style:height="{vRow.size}px" class="bg-slate-50 dark:bg-slate-900/50 animate-pulse">
-            <td colspan={loader.columns.length + 1} class="px-4 text-xs text-slate-300 dark:text-slate-700">
+            <td colspan={visibleColumns.length + 1} class="px-4 text-xs text-slate-300 dark:text-slate-700">
               <!-- intentional empty content: skeleton row -->
             </td>
           </tr>
@@ -389,7 +420,7 @@
               else idMapper.delete(rowId);
             }}
           >
-            {#each loader.columns as column (column)}
+            {#each visibleColumns as column (column)}
               <td
                 class="px-4 py-1 text-slate-500 dark:text-slate-400 align-middle truncate {getAlignment(column)}"
                 style:max-width="{columnSizing[column] ?? 150}px"
@@ -402,7 +433,7 @@
         {/if}
       {/each}
       {#if paddingBottom > 0}
-        <tr style:height="{paddingBottom}px"><td colspan={loader.columns.length + 1}></td></tr>
+        <tr style:height="{paddingBottom}px"><td colspan={visibleColumns.length + 1}></td></tr>
       {/if}
     </tbody>
   </table>
