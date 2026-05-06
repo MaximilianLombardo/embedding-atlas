@@ -34,8 +34,23 @@ import type { RowID } from "../../chart.js";
 import { instancesQuery } from "../query.js";
 import type { SortOrder } from "../types.js";
 
-export const DEFAULT_WINDOW_SIZE = 400;
-export const DEFAULT_OVERSCAN = 200;
+// Window-size and overscan defaults are tuned for "stays populated
+// during flick-scroll" rather than "smallest possible memory
+// footprint." A 1000-row window covers roughly 10× a typical viewport
+// at 32px row height, which means a single Mosaic query lands enough
+// data that the user usually finishes their fling inside it. The 500-
+// row overscan triggers the next slide *well* before the rendered
+// edge reaches the unloaded area, so by the time the user catches up
+// the new window has typically landed and skeleton rows stay rare.
+//
+// Memory cost is small — 1000 row objects of ~50 typed columns =
+// O(1MB) in JS. Query cost is dominated by Mosaic round-trip
+// overhead, not the row count, so 1000 isn't measurably slower than
+// 400. Throttle at 100ms is the leading-edge fire delay; it's the
+// "first slide" that matters most during a fling, and that one
+// happens immediately.
+export const DEFAULT_WINDOW_SIZE = 1000;
+export const DEFAULT_OVERSCAN = 500;
 const SLIDE_THROTTLE_MS = 100;
 
 export type WindowRow = "loading" | Record<string, any>;
@@ -86,7 +101,16 @@ export class WindowLoader {
    * reads + writes it from inside the same Svelte effect.
    */
   windowOffset = 0;
-  /** Rows in the current window, indexed by (absoluteIndex - windowOffset). */
+  /**
+   * Offset that `windowRows` actually corresponds to. Updated when a
+   * query result lands; lags `windowOffset` while a slide is in
+   * flight. `rowAt` reads this so that during a slide the user sees
+   * the closest available data (correctly indexed) instead of
+   * skeletons. Without this split, flick-scrolling would blank out
+   * the table because every "stale" result was being dropped.
+   */
+  windowDataOffset = $state<number>(0);
+  /** Rows in the current window, indexed by (absoluteIndex - windowDataOffset). */
   windowRows = $state<Record<string, any>[]>([]);
   /** True while a slide query is in flight (used for skeleton-row decisions). */
   loading = $state<boolean>(false);
@@ -185,8 +209,12 @@ export class WindowLoader {
         self.opts.onPrepared?.({ columns: names, defaultColumnWidths: defaults });
       },
       query: (predicate) => {
-        // Capture intended offset at query-build time. The result handler
-        // pops this off and verifies it still matches windowOffset.
+        // Capture the offset this query was built for. queryResult
+        // pairs each result with its query via FIFO ordering and
+        // commits — even results that no longer match the latest
+        // slide intent are committed against their original offset,
+        // so rowAt has *something* to render during a fling. The
+        // last result to land wins by virtue of FIFO order.
         const offsetForThisQuery = self.windowOffset;
         self.pendingResultOffsets.push(offsetForThisQuery);
         self.lastAppliedPredicate = predicate ?? undefined;
@@ -194,14 +222,16 @@ export class WindowLoader {
         return self.buildWindowQuery(predicate ?? undefined, offsetForThisQuery);
       },
       queryResult: (result: any) => {
-        // FIFO: the oldest in-flight query lands first. Compare against
-        // the *current* intended windowOffset; drop if superseded.
         const queryOffset = self.pendingResultOffsets.shift();
         if (self.pendingResultOffsets.length === 0) self.loading = false;
-        if (queryOffset !== self.windowOffset) {
-          // Stale window — a more recent slide has happened.
-          return;
-        }
+        if (queryOffset == null) return;
+        // Always commit. windowDataOffset records which absolute
+        // offset this data corresponds to; rowAt indexes off that.
+        // If a fresher query is still in flight, its result will
+        // land next and overwrite. In the meantime, the user sees
+        // correctly-indexed rows from a slightly older window
+        // instead of skeletons.
+        self.windowDataOffset = queryOffset;
         self.windowRows = (result as any).toArray();
       },
       queryError: (err: any) => {
@@ -264,7 +294,11 @@ export class WindowLoader {
    */
   rowAt(absoluteIndex: number): WindowRow | undefined {
     if (absoluteIndex < 0 || absoluteIndex >= this.totalCount) return undefined;
-    const local = absoluteIndex - this.windowOffset;
+    // Index off windowDataOffset (where the data actually came from),
+    // not windowOffset (where the slide intent points). During a
+    // fling, the two diverge: this lets us render the previously
+    // loaded window in-place while the new query is still flying.
+    const local = absoluteIndex - this.windowDataOffset;
     if (local < 0 || local >= this.windowRows.length) return "loading";
     return this.windowRows[local];
   }
