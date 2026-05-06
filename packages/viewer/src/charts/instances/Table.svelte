@@ -37,12 +37,32 @@
   import type { ColumnStyle } from "../../renderers/types.js";
   import type { ColumnDesc } from "../../utils/database.js";
   import type { RowID } from "../chart.js";
+  import type { Coordinator, Selection } from "@uwdata/mosaic-core";
+
+  import HeaderFilterPopover from "./HeaderFilterPopover.svelte";
   import { inferColumnFormatters } from "./infer_formatters.js";
   import { createSvelteTable } from "./lib/table_core.svelte.js";
   import { type StoredColumnState } from "./lib/use_column_state.svelte.js";
   import { loadStoredWidths, saveStoredWidths } from "./lib/use_column_widths.svelte.js";
   import { WindowLoader } from "./lib/window_loader.svelte.js";
   import type { SortOrder } from "./types.js";
+
+  /**
+   * Bundle of plumbing needed for per-column header filters. When
+   * undefined the filter icons are hidden (e.g. custom `spec.query`
+   * mode where the predicate set isn't well-defined).
+   */
+  export interface ColumnFilterContext {
+    coordinator: Coordinator;
+    table: string;
+    filter: Selection;
+    /** Map of column → currently selected values (one entry per active filter). */
+    columnFilters: Record<string, string[]>;
+    /** Stable per-column source object; reused across popover opens. */
+    sourceFor: (column: string) => object;
+    /** Called when the user changes the selection for a column. */
+    onChange: (column: string, values: string[]) => void;
+  }
 
   interface Props {
     loader: WindowLoader;
@@ -65,6 +85,8 @@
      * via the bind. localStorage persistence also lives in the parent.
      */
     columnState?: StoredColumnState;
+    /** Per-column filter plumbing. When undefined, header filter icons hide. */
+    filterContext?: ColumnFilterContext;
     onRowClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
     /**
      * Fired on row double-click. Receives the full row record so the
@@ -83,6 +105,7 @@
     sort,
     tableName,
     columnState = $bindable({ visibility: {}, order: [], pinning: { left: [] } }),
+    filterContext,
     onRowClick,
     onRowDoubleClick,
     onSortChange,
@@ -414,6 +437,18 @@
                   {/if}
                 </div>
               </button>
+              {#if filterContext}
+                <HeaderFilterPopover
+                  {column}
+                  columnDesc={columnDescs.find((c) => c.name === column)}
+                  coordinator={filterContext.coordinator}
+                  table={filterContext.table}
+                  filter={filterContext.filter}
+                  source={filterContext.sourceFor(column)}
+                  selected={filterContext.columnFilters[column] ?? []}
+                  onSelectionChange={(values) => filterContext.onChange(column, values)}
+                />
+              {/if}
             </div>
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <div

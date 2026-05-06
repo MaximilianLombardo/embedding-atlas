@@ -295,6 +295,25 @@
     columnState = { ...columnState, pinning: { left: next } };
   }
 
+  // Per-column header filter state. Each column gets a stable source
+  // object (Mosaic Selection identifies clauses by source identity)
+  // held in this Map; reused on every popover open/close so the
+  // clause survives popover lifecycle. columnFilters is the active
+  // selection per column — empty array means no filter.
+  const filterSources = new Map<string, object>();
+  function sourceFor(column: string): object {
+    let s = filterSources.get(column);
+    if (!s) {
+      s = { __columnFilter: column };
+      filterSources.set(column, s);
+    }
+    return s;
+  }
+  let columnFilters = $state<Record<string, string[]>>({});
+  function handleColumnFilterChange(column: string, values: string[]) {
+    columnFilters = { ...columnFilters, [column]: values };
+  }
+
   // Compute the rendered column order for the menu: stored order
   // first (for any columns still in the schema), then any
   // schema-but-not-stored columns appended. This gives the menu and
@@ -370,6 +389,14 @@
           sort={spec.sort}
           tableName={context.table}
           bind:columnState={columnState}
+          filterContext={spec.query == null ? {
+            coordinator: context.coordinator,
+            table: context.table,
+            filter: context.filter,
+            columnFilters,
+            sourceFor,
+            onChange: handleColumnFilterChange,
+          } : undefined}
           onRowClick={handleRowClick}
           onRowDoubleClick={handleRowDoubleClick}
           onSortChange={(value) => onSpecChange({ sort: value })}
