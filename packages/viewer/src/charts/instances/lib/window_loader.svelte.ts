@@ -36,21 +36,23 @@ import type { SortOrder } from "../types.js";
 
 // Window-size and overscan defaults are tuned for "stays populated
 // during flick-scroll" rather than "smallest possible memory
-// footprint." A 1000-row window covers roughly 10× a typical viewport
-// at 32px row height, which means a single Mosaic query lands enough
-// data that the user usually finishes their fling inside it. The 500-
-// row overscan triggers the next slide *well* before the rendered
-// edge reaches the unloaded area, so by the time the user catches up
-// the new window has typically landed and skeleton rows stay rare.
+// footprint." A 2000-row window covers roughly 20× a typical viewport
+// at 32px row height, so a single Mosaic query lands enough data
+// that even a fast fling rarely exits it. The 1000-row overscan
+// triggers the next slide well before the rendered edge reaches the
+// unloaded area, so by the time the user catches up the new window
+// has typically landed and skeleton rows stay rare.
 //
-// Memory cost is small — 1000 row objects of ~50 typed columns =
-// O(1MB) in JS. Query cost is dominated by Mosaic round-trip
-// overhead, not the row count, so 1000 isn't measurably slower than
-// 400. Throttle at 100ms is the leading-edge fire delay; it's the
+// Memory cost is small — 2000 row objects of ~50 typed columns =
+// O(2MB) in JS. Query cost is dominated by Mosaic round-trip
+// overhead, not the row count, so 2000 isn't measurably slower than
+// 1000. Beyond ~3000 the per-query latency starts to bite (you wait
+// longer for each window swap), so this is roughly the sweet spot.
+// Throttle at 100ms is the leading-edge fire delay; it's the
 // "first slide" that matters most during a fling, and that one
 // happens immediately.
-export const DEFAULT_WINDOW_SIZE = 1000;
-export const DEFAULT_OVERSCAN = 500;
+export const DEFAULT_WINDOW_SIZE = 2000;
+export const DEFAULT_OVERSCAN = 1000;
 const SLIDE_THROTTLE_MS = 100;
 
 export type WindowRow = "loading" | Record<string, any>;
