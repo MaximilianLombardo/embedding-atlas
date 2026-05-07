@@ -16,9 +16,9 @@
   import Button from "./widgets/Button.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
   import Input from "./widgets/Input.svelte";
-  import PopupButton from "./widgets/PopupButton.svelte";
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
+  import SettingsDrawer from "./widgets/SettingsDrawer.svelte";
   import Spinner from "./widgets/Spinner.svelte";
 
   import {
@@ -435,33 +435,54 @@
     };
   }
 
-  // Snippets contributed by charts to the page-level settings menu.
-  // Iteration order follows chart insertion order in `chartDelegates`,
-  // which mirrors layout order.
+  // Snippets contributed by charts to the settings drawer. Iteration
+  // order follows chart insertion order in `chartDelegates`, which
+  // mirrors layout order. `key` is the chart id (stable per chart),
+  // suitable for a persistent active-tab token in localStorage.
   let chartSettingsGroups = $derived.by(() => {
-    const groups: { key: string; title: string; content: import("svelte").Snippet }[] = [];
-    let n = 0;
+    const groups: {
+      key: string;
+      title: string;
+      icon?: import("svelte").Component<{ class?: string }>;
+      content: import("svelte").Snippet;
+    }[] = [];
     for (const [id, set] of chartDelegates) {
       for (const d of set) {
         if (d.settingsContent) {
           groups.push({
-            key: `${id}:${n++}`,
+            key: id,
             title: d.settingsTitle ?? "Settings",
+            icon: d.settingsIcon,
             content: d.settingsContent,
           });
+          break; // One settings tab per chart id; first delegate wins.
         }
       }
     }
     return groups;
   });
 
-  // Selected settings tab (0 = Global, 1..N = chart-contributed groups).
-  // Persists across menu open/close within a session; resets to Global
-  // if the previously selected chart group is no longer present.
-  let activeSettingsTab = $state(0);
+  // Drawer open/closed (UI-only, not persisted across reloads — a
+  // user closes it when they're done) plus active tab key (persisted
+  // so power users land on their preferred tab on next load).
+  let drawerOpen = $state(false);
+  const ACTIVE_TAB_KEY = "embedding-atlas:settings-tab";
+  let activeSettingsKey = $state<string>("global");
+  // Hydrate from localStorage on mount; written back on change.
   $effect(() => {
-    const max = chartSettingsGroups.length;
-    if (activeSettingsTab > max) activeSettingsTab = 0;
+    try {
+      const v = localStorage.getItem(ACTIVE_TAB_KEY);
+      if (v) activeSettingsKey = v;
+    } catch {
+      // ignore (e.g. SSR or storage disabled)
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(ACTIVE_TAB_KEY, activeSettingsKey);
+    } catch {
+      /* ignore */
+    }
   });
 
   let mcpStatus = $state.raw<string | undefined>(undefined);
@@ -525,7 +546,13 @@
   }
 </script>
 
-<div class="embedding-atlas-root" style:width="100%" style:height="100%" bind:this={container}>
+<div
+  class="embedding-atlas-root"
+  style:width="100%"
+  style:height="100%"
+  style:position="relative"
+  bind:this={container}
+>
   <div
     class="w-full h-full flex flex-col text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
     class:dark={$colorScheme == "dark"}
@@ -619,59 +646,11 @@
               }}
             />
           {/if}
-          <PopupButton icon={IconSettings} title="Options">
-            <div class="min-w-[420px] flex flex-col">
-              <!-- Tab bar: Global is always tab 0; chart-contributed
-                   groups follow in layout order. Underline marks the
-                   active tab. The bar scrolls horizontally if many
-                   charts contribute groups so the popover width stays
-                   bounded. -->
-              <div
-                class="flex gap-1 border-b border-slate-200 dark:border-slate-700 -mx-3 px-3 mb-3 overflow-x-auto"
-              >
-                <button
-                  type="button"
-                  class="px-3 py-1.5 text-sm whitespace-nowrap border-b-2 -mb-px transition focus:outline-none"
-                  class:border-blue-500={activeSettingsTab === 0}
-                  class:text-slate-700={activeSettingsTab === 0}
-                  class:dark:text-slate-100={activeSettingsTab === 0}
-                  class:border-transparent={activeSettingsTab !== 0}
-                  class:text-slate-500={activeSettingsTab !== 0}
-                  class:dark:text-slate-400={activeSettingsTab !== 0}
-                  class:hover:text-slate-700={activeSettingsTab !== 0}
-                  class:dark:hover:text-slate-200={activeSettingsTab !== 0}
-                  onclick={() => (activeSettingsTab = 0)}>Global</button
-                >
-                {#each chartSettingsGroups as group, i (group.key)}
-                  {@const tabIndex = i + 1}
-                  <button
-                    type="button"
-                    class="px-3 py-1.5 text-sm whitespace-nowrap border-b-2 -mb-px transition focus:outline-none"
-                    class:border-blue-500={activeSettingsTab === tabIndex}
-                    class:text-slate-700={activeSettingsTab === tabIndex}
-                    class:dark:text-slate-100={activeSettingsTab === tabIndex}
-                    class:border-transparent={activeSettingsTab !== tabIndex}
-                    class:text-slate-500={activeSettingsTab !== tabIndex}
-                    class:dark:text-slate-400={activeSettingsTab !== tabIndex}
-                    class:hover:text-slate-700={activeSettingsTab !== tabIndex}
-                    class:dark:hover:text-slate-200={activeSettingsTab !== tabIndex}
-                    onclick={() => (activeSettingsTab = tabIndex)}>{group.title}</button
-                  >
-                {/each}
-              </div>
-              <!-- Tab body: only the selected tab's content renders. -->
-              <div class="flex flex-col gap-2">
-                {#if activeSettingsTab === 0}
-                  {@render globalSettings()}
-                {:else}
-                  {@const group = chartSettingsGroups[activeSettingsTab - 1]}
-                  {#if group}
-                    {@render group.content()}
-                  {/if}
-                {/if}
-              </div>
-            </div>
-          </PopupButton>
+          <Button
+            icon={IconSettings}
+            title="Settings"
+            onClick={() => (drawerOpen = !drawerOpen)}
+          />
         </div>
       {/if}
     </div>
@@ -700,6 +679,21 @@
       {/snippet}
     </CommandPalette>
   {/if}
+
+  <!-- Settings drawer: overlays the right edge of the atlas. Stays
+       mounted across open/close so registered chart snippets keep
+       their internal state; visibility is animated by transform on
+       the wrapper, see SettingsDrawer.svelte. -->
+  <SettingsDrawer
+    open={drawerOpen}
+    onClose={() => (drawerOpen = false)}
+    globalContent={globalSettings}
+    chartGroups={chartSettingsGroups}
+    activeKey={activeSettingsKey}
+    onActiveKeyChange={(k) => (activeSettingsKey = k)}
+    mcpStatus={mcpStatus}
+    version={EMBEDDING_ATLAS_VERSION}
+  />
 </div>
 <svelte:window onkeydown={onWindowKeydown} />
 
@@ -758,21 +752,7 @@
       </div>
     {/if}
   </div>
-  {#if mcpStatus}
-    <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
-    <div class="flex flex-none gap-2 select-none items-center">
-      {#if mcpStatus == "connecting"}
-        <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
-        Connecting...
-      {:else if mcpStatus == "connected"}
-        <div class="w-3 h-3 rounded-full bg-green-500"></div>
-        Connected
-      {:else if mcpStatus == "closed" || mcpStatus == "error"}
-        <div class="w-3 h-3 rounded-full bg-red-500"></div>
-        Error or server closed connection
-      {/if}
-    </div>
-  {/if}
-  <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
-  <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
+  <!-- MCP status and version moved out of the Global tab body and
+       into the SettingsDrawer footer, where they stay visible
+       regardless of which tab is selected. -->
 {/snippet}

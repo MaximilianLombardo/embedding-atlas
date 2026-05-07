@@ -2,7 +2,7 @@
 
 import type { EmbeddingViewConfig, Label } from "@embedding-atlas/component";
 import type { Coordinator, Selection } from "@uwdata/mosaic-core";
-import type { Snippet } from "svelte";
+import type { Component, Snippet } from "svelte";
 import type { Readable, Writable } from "svelte/store";
 
 import type { ColumnDesc } from "../utils/database.js";
@@ -170,6 +170,13 @@ export interface ChartDelegate {
 
   /** Group title for `settingsContent` (e.g. "Table"). Falls back to "Settings" if omitted. */
   settingsTitle?: string;
+
+  /**
+   * Optional Svelte icon component for the settings tab strip.
+   * When omitted, the host renders a small generic dot. Should
+   * accept a `class` prop so the host can size it (`w-5 h-5`).
+   */
+  settingsIcon?: Component<{ class?: string }>;
 }
 
 export type { ChartBuilderDescription } from "./builder/builder_description.js";

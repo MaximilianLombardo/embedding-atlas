@@ -27,7 +27,7 @@
   import { deepMemo } from "@embedding-atlas/utils";
   import { untrack } from "svelte";
 
-  import { IconDownload } from "../../assets/icons.js";
+  import { IconDownload, IconTable } from "../../assets/icons.js";
   import ActionButton from "../../widgets/ActionButton.svelte";
   import ColumnControls from "./ColumnControls.svelte";
   import DetailDrawer from "./DetailDrawer.svelte";
@@ -368,6 +368,7 @@
       if (!registerDelegate) return;
       return registerDelegate({
         settingsTitle,
+        settingsIcon: IconTable,
         settingsContent: tableSettings,
       });
     });
