@@ -31,9 +31,14 @@
     the registration plumbing in `ChartDelegate.settingsContent`
     is unchanged. Each group's `key` is the host's chart id, used
     as the persisted active-tab token.
+  - Border / surface colors match the rest of the atlas's widgets
+    (`slate-300 / slate-600`, white / slate-900) — see
+    `Button.svelte` for the canonical reference.
 -->
 <script lang="ts">
   import type { Component, Snippet } from "svelte";
+
+  import Button from "./Button.svelte";
 
   import { IconClose, IconSettings } from "../assets/icons.js";
 
@@ -81,7 +86,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div
-  class="absolute top-0 right-0 bottom-0 z-30 w-[400px] flex flex-col bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 shadow-xl"
+  class="absolute top-0 right-0 bottom-0 z-30 w-[400px] flex flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-l border-slate-300 dark:border-slate-600 shadow-md"
   style:transform={open ? "translateX(0)" : "translateX(calc(100% + 8px))"}
   style:transition="transform 220ms ease-out"
   style:pointer-events={open ? "auto" : "none"}
@@ -89,34 +94,27 @@
 >
   <!-- Header -->
   <div
-    class="h-12 flex-none px-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-700"
+    class="h-12 flex-none px-3 flex items-center justify-between border-b border-slate-300 dark:border-slate-600"
   >
-    <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Settings</h2>
-    <button
-      type="button"
-      onclick={onClose}
-      title="Close (Esc)"
-      class="p-1 rounded text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-    >
-      <IconClose class="w-5 h-5" />
-    </button>
+    <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100 px-1">Settings</h2>
+    <Button icon={IconClose} title="Close (Esc)" onClick={onClose} />
   </div>
 
   <!-- Body: vertical tab strip + tab content -->
   <div class="flex-1 flex min-h-0">
     <div
-      class="w-16 flex-none bg-slate-50 dark:bg-slate-800/50 border-r border-slate-200 dark:border-slate-700 py-2 flex flex-col gap-0.5 overflow-y-auto"
+      class="w-16 flex-none bg-slate-100 dark:bg-slate-800 border-r border-slate-300 dark:border-slate-600 py-2 flex flex-col gap-0.5 overflow-y-auto"
     >
       <button
         type="button"
         onclick={() => onActiveKeyChange("global")}
-        class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px]"
-        class:bg-blue-50={activeKey === "global"}
-        class:dark:bg-blue-900={activeKey === "global"}
+        class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px] focus-visible:outline-2 outline-blue-600 -outline-offset-1"
+        class:bg-white={activeKey === "global"}
+        class:dark:bg-slate-900={activeKey === "global"}
         class:border-blue-500={activeKey === "global"}
         class:border-transparent={activeKey !== "global"}
-        class:text-blue-700={activeKey === "global"}
-        class:dark:text-blue-300={activeKey === "global"}
+        class:text-blue-600={activeKey === "global"}
+        class:dark:text-blue-400={activeKey === "global"}
         class:text-slate-500={activeKey !== "global"}
         class:dark:text-slate-400={activeKey !== "global"}
         class:hover:text-slate-700={activeKey !== "global"}
@@ -132,13 +130,13 @@
           type="button"
           onclick={() => onActiveKeyChange(group.key)}
           title={group.title}
-          class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px] px-1"
-          class:bg-blue-50={isActive}
-          class:dark:bg-blue-900={isActive}
+          class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px] px-1 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
+          class:bg-white={isActive}
+          class:dark:bg-slate-900={isActive}
           class:border-blue-500={isActive}
           class:border-transparent={!isActive}
-          class:text-blue-700={isActive}
-          class:dark:text-blue-300={isActive}
+          class:text-blue-600={isActive}
+          class:dark:text-blue-400={isActive}
           class:text-slate-500={!isActive}
           class:dark:text-slate-400={!isActive}
           class:hover:text-slate-700={!isActive}
@@ -170,9 +168,11 @@
 
   <!-- Footer: MCP status (left) + version (right). Stays visible
        regardless of selected tab so atlas-level meta is always at
-       hand. -->
+       hand. When no MCP is configured, the indicator is rendered
+       in a muted "off" state rather than hidden, so the footer
+       always communicates atlas status. -->
   <div
-    class="h-8 flex-none px-4 flex items-center justify-between border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30 text-xs"
+    class="h-8 flex-none px-3 flex items-center justify-between border-t border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 text-xs"
   >
     <div class="flex items-center gap-1.5">
       {#if mcpStatus === "connecting"}
@@ -184,6 +184,9 @@
       {:else if mcpStatus === "closed" || mcpStatus === "error"}
         <div class="w-1.5 h-1.5 rounded-full bg-red-500"></div>
         <span class="text-slate-500 dark:text-slate-400">MCP error</span>
+      {:else}
+        <div class="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div>
+        <span class="text-slate-400 dark:text-slate-500">MCP off</span>
       {/if}
     </div>
     <span class="text-slate-400 dark:text-slate-500">v{version}</span>

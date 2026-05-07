@@ -346,10 +346,13 @@
     downloadBuffer(bytes, name);
   }
 
-  // Per-chart settings group title shown in the page-level settings
-  // menu. When multiple Instances charts coexist in a layout, including
-  // `spec.title` keeps each group identifiable.
-  let settingsTitle = $derived(spec.title ? `Table — ${spec.title}` : "Table");
+  // Per-chart settings group title shown in the settings drawer's
+  // tab strip. Kept short ("Table") so it fits the 64px tab — when
+  // multiple Instances charts coexist in a layout, distinguishing
+  // them in the strip would need a different UX (per-instance
+  // sub-tabs, or a chart picker), which we'll address when that
+  // case actually shows up.
+  let settingsTitle = "Table";
 
   // Register a settings snippet with the page-level menu. The snippet
   // itself is defined in the template below; it captures the column

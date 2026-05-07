@@ -548,15 +548,15 @@
 
 <div
   class="embedding-atlas-root"
+  class:dark={$colorScheme == "dark"}
   style:width="100%"
   style:height="100%"
   style:position="relative"
+  style:color-scheme={$colorScheme}
   bind:this={container}
 >
   <div
     class="w-full h-full flex flex-col text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
-    class:dark={$colorScheme == "dark"}
-    style:color-scheme={$colorScheme}
   >
     <!-- Toolbar -->
     <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
