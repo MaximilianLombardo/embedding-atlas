@@ -163,12 +163,37 @@
             onChange={(v) => (tableHeight = v)}
           />
         {/if}
-        {#if hasTable}
-          <div
-            class="flex flex-col gap-1 overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
-            style:height={hasEmbedding ? `${tableHeight}px` : null}
-            transition:slide
-          >
+        <!--
+          Table panel: kept mounted across hide/show so the
+          @tanstack/table-core + virtualizer + Mosaic clients pay
+          their setup cost once, on first appearance, instead of
+          on every toggle. The previous `{#if hasTable}` +
+          `transition:slide` mounted/unmounted the chart on every
+          toggle; with the table virtualization rebuild that mount
+          is a ~250 ms synchronous burst (createSvelteTable over
+          ~40 columns, HeaderFilterPopover per column, virtualizer
+          init), which showed up as a single dropped frame at the
+          start of the slide-in animation.
+
+          The collapse animation uses a CSS grid-template-rows
+          0fr ↔ 1fr transition — pure layout work, no JS — same
+          pattern as `ListChartPanel.svelte`'s chevron toggle.
+          When `hasTable` is false the inner pane has zero rows
+          allocated, so it's visually identical to unmounted; the
+          `overflow:hidden` outer wrapper clips everything during
+          and after the transition. When there's no table chart
+          in the layout at all (`sections.table.length === 0`)
+          the {#each} renders nothing, so no chart is mounted in
+          that case either.
+        -->
+        <div
+          class="overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
+          style:display="grid"
+          style:grid-template-rows={hasTable ? "1fr" : "0fr"}
+          style:transition="grid-template-rows 300ms ease-in-out, height 300ms ease-in-out"
+          style:height={hasEmbedding ? (hasTable ? `${tableHeight}px` : "0px") : null}
+        >
+          <div class="flex flex-col gap-1 overflow-hidden min-h-0">
             {#if chatAvailable}
               <div class="flex-none flex items-center gap-2 px-1">
                 <TableTabBar value={tableTab} onChange={setTableTab} />
@@ -195,7 +220,7 @@
               </div>
             {/if}
           </div>
-        {/if}
+        </div>
       </div>
     {/if}
     {#if (hasEmbedding || hasTable) && hasChart}
