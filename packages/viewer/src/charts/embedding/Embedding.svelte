@@ -217,7 +217,10 @@
     return untrack(() => {
       if (!registerDelegate) return;
       return registerDelegate({
-        settingsTitle: "Embedding",
+        // Short label — the drawer's tab strip is 64 px wide, and
+        // "Embedding" overflows even at 10px. "Embed" plus the
+        // scatter-plot icon is enough to identify the tab.
+        settingsTitle: "Embed",
         settingsIcon: IconEmbeddingView,
         settingsContent: embeddingSettings,
       });

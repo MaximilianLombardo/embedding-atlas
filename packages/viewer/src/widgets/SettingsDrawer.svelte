@@ -121,7 +121,11 @@
         class:dark:hover:text-slate-200={activeKey !== "global"}
       >
         <IconSettings class="w-5 h-5" />
-        <span class="text-[11px] font-medium leading-tight">Global</span>
+        <span
+          class="block text-[11px] font-medium leading-tight max-w-[56px] truncate"
+        >
+          Global
+        </span>
       </button>
       {#each chartGroups as group (group.key)}
         {@const isActive = activeKey === group.key}
@@ -147,7 +151,13 @@
           {:else}
             <div class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></div>
           {/if}
-          <span class="text-[10px] font-medium leading-tight text-center max-w-[56px] truncate">
+          <!-- block + truncate keeps long titles inside the 56px content
+               box (parent button is 64px wide, px-1 strips 8px). Inline
+               spans ignore max-width, so the prior truncate class was
+               silently inert and titles like "Embedding" overflowed. -->
+          <span
+            class="block text-[10px] font-medium leading-tight text-center max-w-[56px] truncate"
+          >
             {group.title}
           </span>
         </button>
