@@ -175,25 +175,35 @@
           init), which showed up as a single dropped frame at the
           start of the slide-in animation.
 
-          The collapse animation uses a CSS grid-template-rows
-          0fr ↔ 1fr transition — pure layout work, no JS — same
-          pattern as `ListChartPanel.svelte`'s chevron toggle.
-          When `hasTable` is false the inner pane has zero rows
-          allocated, so it's visually identical to unmounted; the
-          `overflow:hidden` outer wrapper clips everything during
-          and after the transition. When there's no table chart
-          in the layout at all (`sections.table.length === 0`)
-          the {#each} renders nothing, so no chart is mounted in
-          that case either.
+          Two-layer wrapper trick (only when an embedding sits
+          above; the no-embedding case has no toggle reachable
+          from the toolbar):
+
+            outer  → animates height 0 ↔ tableHeight, overflow:hidden
+            inner  → always tableHeight tall
+
+          Animating the *outer* height does the visual reveal;
+          keeping the *inner* at a stable height keeps the chart's
+          scroll element a stable size throughout the transition.
+          The @tanstack/svelte-virtual ResizeObserver only fires
+          on actual content-rect changes, so it never re-computes
+          its visible range mid-animation and never reconciles
+          new <tr>s while the user is staring at the slide-in.
+          All visible rows are already rendered on first show; the
+          only work during the animation is paint.
+
+          When `sections.table.length === 0` the {#each} renders
+          nothing, so no chart is mounted in that case either.
         -->
         <div
           class="overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
-          style:display="grid"
-          style:grid-template-rows={hasTable ? "1fr" : "0fr"}
-          style:transition="grid-template-rows 300ms ease-in-out, height 300ms ease-in-out"
           style:height={hasEmbedding ? (hasTable ? `${tableHeight}px` : "0px") : null}
+          style:transition={hasEmbedding ? "height 300ms ease-in-out" : null}
         >
-          <div class="flex flex-col gap-1 overflow-hidden min-h-0">
+          <div
+            class="flex flex-col gap-1 overflow-hidden min-h-0"
+            style:height={hasEmbedding ? `${tableHeight}px` : "100%"}
+          >
             {#if chatAvailable}
               <div class="flex-none flex items-center gap-2 px-1">
                 <TableTabBar value={tableTab} onChange={setTableTab} />
