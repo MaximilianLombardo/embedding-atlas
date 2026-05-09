@@ -10,14 +10,16 @@
 
   import LayoutOptionsView from "./layouts/LayoutOptionsView.svelte";
   import LayoutView from "./layouts/LayoutView.svelte";
+  import Resizer from "./layouts/list/Resizer.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
+  import AtlasIconStrip from "./widgets/AtlasIconStrip.svelte";
   import Button from "./widgets/Button.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
-  import SettingsDrawer from "./widgets/SettingsDrawer.svelte";
+  import SettingsPanel from "./widgets/SettingsPanel.svelte";
   import Slider from "./widgets/Slider.svelte";
 
   import {
@@ -25,11 +27,14 @@
     IconDarkMode,
     IconDashboardLayout,
     IconDownload,
+    IconEmbeddingView,
     IconExport,
     IconLightMode,
     IconListLayout,
+    IconMenu,
     IconSearch,
     IconSettings,
+    IconTable,
   } from "./assets/icons.js";
 
   import type { EmbeddingAtlasProps, EmbeddingAtlasState } from "./api.js";
@@ -522,10 +527,25 @@
     return groups;
   });
 
-  // Drawer open/closed (UI-only, not persisted across reloads — a
-  // user closes it when they're done) plus active tab key (persisted
-  // so power users land on their preferred tab on next load).
+  // Settings panel open/closed (UI-only, not persisted across
+  // reloads — a user closes it when they're done) plus active tab
+  // key (persisted so power users land on their preferred tab on
+  // next load). The variable name is `drawerOpen` for now to keep
+  // the diff small; P2.5 may rename it to align with `showSettings`
+  // in `ListLayoutState`.
   let drawerOpen = $state(false);
+  // Width of the inline settings panel when open. Animated between
+  // 0 (closed) and this value (open) by SettingsPanel itself; the
+  // resizer between the panel and the main content drives drag
+  // resize. Range matches the right-side charts panel pattern.
+  // P2.6 will persist this to localStorage; for now it's reactive
+  // state with a sensible default.
+  const SETTINGS_PANEL_WIDTH_DEFAULT = 360;
+  let settingsPanelWidth = $state(SETTINGS_PANEL_WIDTH_DEFAULT);
+  // Container width for the horizontal flex root, bound via
+  // `bind:clientWidth`. Used to clamp the resizer's max value so
+  // the panel can't squeeze the main content below ~200px.
+  let containerWidth = $state(800);
   const ACTIVE_TAB_KEY = "embedding-atlas:settings-tab";
   let activeSettingsKey = $state<string>("global");
   // Hydrate from localStorage on mount; written back on change.
@@ -578,6 +598,121 @@
     } catch {
       /* ignore */
     }
+  });
+
+  // Toggle a boolean field on the active layout's state. Used by the
+  // icon strip's middle section to flip showEmbedding / showTable /
+  // showCharts visibility. Mirrors ListLayoutOptions.svelte's
+  // ToggleButton bind: pattern but as a single-call helper because
+  // we feed plain `{ icon, onClick }` button specs to AtlasIconStrip
+  // rather than rendering ToggleButtons inline.
+  function toggleLayoutField(field: string, defaultValue: boolean) {
+    const current = ((layoutStates[layout] ?? {}) as Record<string, any>)[field] ?? defaultValue;
+    layoutStates = {
+      ...layoutStates,
+      [layout]: { ...(layoutStates[layout] ?? {}), [field]: !current },
+    };
+  }
+
+  // Sections fed to AtlasIconStrip. The strip is presentational —
+  // it has no atlas-state knowledge of its own — so we derive the
+  // full button list (icons + active states + handlers) here and
+  // hand it to the strip. See widgets/AtlasIconStrip.svelte.
+  //
+  // Top section (layout): list / dashboard.
+  // Middle section (show/hide, list-layout only): embedding /
+  //   table / charts. Hidden for the dashboard layout because
+  //   those toggles are list-specific (mirrors LayoutOptionsView,
+  //   which only renders the show/hide controls for list).
+  // Bottom section (atlas-level): theme toggle (only when the host
+  //   doesn't hard-code a color scheme via `colorScheme` prop) +
+  //   settings gear. The bottom section is pinned to the floor by
+  //   AtlasIconStrip's mt-auto rule.
+  let stripSections = $derived.by(() => {
+    const listState = (layoutStates[layout] ?? {}) as Record<string, any>;
+    const showEmbedding = (listState.showEmbedding ?? true) as boolean;
+    const showTable = (listState.showTable ?? true) as boolean;
+    const showCharts = (listState.showCharts ?? true) as boolean;
+
+    const sections: {
+      key: string;
+      buttons: {
+        icon: import("svelte").Component<{ class?: string }>;
+        title: string;
+        active?: boolean;
+        onClick: () => void;
+      }[];
+    }[] = [
+      {
+        key: "layout",
+        buttons: [
+          {
+            icon: IconListLayout,
+            title: "List layout",
+            active: layout === "list",
+            onClick: () => (layout = "list"),
+          },
+          {
+            icon: IconDashboardLayout,
+            title: "Dashboard layout",
+            active: layout === "dashboard",
+            onClick: () => (layout = "dashboard"),
+          },
+        ],
+      },
+    ];
+
+    if (layout === "list") {
+      sections.push({
+        key: "show-hide",
+        buttons: [
+          {
+            icon: IconEmbeddingView,
+            title: "Show / hide embedding",
+            active: showEmbedding,
+            onClick: () => toggleLayoutField("showEmbedding", true),
+          },
+          {
+            icon: IconTable,
+            title: "Show / hide table",
+            active: showTable,
+            onClick: () => toggleLayoutField("showTable", true),
+          },
+          {
+            icon: IconMenu,
+            title: "Show / hide charts",
+            active: showCharts,
+            onClick: () => toggleLayoutField("showCharts", true),
+          },
+        ],
+      });
+    }
+
+    const atlasButtons: {
+      icon: import("svelte").Component<{ class?: string }>;
+      title: string;
+      active?: boolean;
+      onClick: () => void;
+    }[] = [];
+    if (colorSchemeProp == null) {
+      atlasButtons.push({
+        icon: $colorScheme === "dark" ? IconLightMode : IconDarkMode,
+        title: "Toggle light / dark mode",
+        active: false,
+        onClick: () => {
+          $userColorScheme = $colorScheme === "light" ? "dark" : "light";
+        },
+      });
+    }
+    atlasButtons.push({
+      icon: IconSettings,
+      title: "Settings",
+      active: drawerOpen,
+      onClick: () => (drawerOpen = !drawerOpen),
+    });
+    sections.push({ key: "atlas", buttons: atlasButtons });
+
+    return sections;
   });
 
   let mcpStatus = $state.raw<string | undefined>(undefined);
@@ -650,80 +785,114 @@
   style:color-scheme={$colorScheme}
   bind:this={container}
 >
+  <!-- Horizontal flex root: icon strip + (optionally) settings
+       panel + resizer + main content column. Replaces the previous
+       single-column flex (toolbar above, content below). The top
+       toolbar still exists *inside* the main column for this commit
+       so the strip and panel can be cross-checked against the old
+       chrome side-by-side; P2.5 removes the toolbar once the strip
+       is fully wired. -->
   <div
-    class="w-full h-full flex flex-col text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
+    class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
+    bind:clientWidth={containerWidth}
   >
-    <!-- Toolbar -->
-    <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
-      {#if initialized}
-        <!-- Left side: spacer where the search bar used to live.
-             The search bar moved into the embedding canvas's
-             upper-left corner (charts/embedding/Embedding.svelte
-             mounts EmbeddingSearchBar). The right-hand pill
-             (FilteredCount + clear-X + Export Selection) moved
-             into the embedding pane's bottom-right StatusBar and
-             the settings drawer's Global → Export section. The
-             remaining toolbar buttons below (layout selector,
-             theme toggle, settings gear) will move to a left-side
-             icon strip in Phase 2. -->
-        <div class="flex-1"></div>
-        <div class="flex flex-none flex-row gap-2">
-          <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
-            {#key layout}
-              <div transition:scale class="col-start-1 row-start-1">
-                <LayoutOptionsView
-                  context={chartContext}
-                  charts={charts}
-                  chartStates={chartStates}
-                  layout={layout}
-                  layoutStates={layoutStates}
-                  onChartsChange={(v) => (charts = v)}
-                  onChartStatesChange={(v) => (chartStates = v)}
-                  onLayoutStatesChange={(v) => (layoutStates = v)}
-                />
-              </div>
-            {/key}
-          </div>
-          <SegmentedControl
-            value={layout}
-            onChange={(v) => (layout = v)}
-            options={[
-              { value: "list", icon: IconListLayout, title: "List layout" },
-              { value: "dashboard", icon: IconDashboardLayout, title: "Dashboard layout" },
-            ]}
-          />
-          {#if colorSchemeProp == null}
-            <Button
-              icon={$colorScheme == "dark" ? IconLightMode : IconDarkMode}
-              title="Toggle light / dark mode"
-              onClick={() => {
-                $userColorScheme = $colorScheme == "light" ? "dark" : "light";
-              }}
+    <AtlasIconStrip sections={stripSections} />
+
+    <!-- Inline settings panel. Width animates between 0 (closed)
+         and `settingsPanelWidth` (open). Stays mounted across
+         open/close so the contributed snippets keep their state
+         (the same reason the chart-snippet pattern is preserved). -->
+    <SettingsPanel
+      width={drawerOpen ? settingsPanelWidth : 0}
+      onClose={() => (drawerOpen = false)}
+      globalContent={globalSettings}
+      pageGroups={[{ key: "search", title: "Search", icon: IconSearch, content: searchSettings }]}
+      chartGroups={chartSettingsGroups}
+      activeKey={activeSettingsKey}
+      onActiveKeyChange={(k) => (activeSettingsKey = k)}
+      mcpStatus={mcpStatus}
+      version={EMBEDDING_ATLAS_VERSION}
+    />
+    {#if drawerOpen}
+      <Resizer
+        class="w-1 flex-none bg-slate-300 dark:bg-slate-600 hover:bg-blue-500 dark:hover:bg-blue-400 transition-colors"
+        axis="x"
+        scaler={1}
+        min={240}
+        max={Math.max(240, containerWidth - 200)}
+        value={settingsPanelWidth}
+        onChange={(v) => (settingsPanelWidth = v)}
+      />
+    {/if}
+
+    <!-- Main column: toolbar (transitional, removed in P2.5) +
+         content. min-w-0 so the column can shrink when the
+         settings panel grows; without it the toolbar's flex-wrap
+         children would refuse to compress, pushing the layout
+         out past the container. -->
+    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <!-- Toolbar (transitional). -->
+      <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
+        {#if initialized}
+          <div class="flex-1"></div>
+          <div class="flex flex-none flex-row gap-2">
+            <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
+              {#key layout}
+                <div transition:scale class="col-start-1 row-start-1">
+                  <LayoutOptionsView
+                    context={chartContext}
+                    charts={charts}
+                    chartStates={chartStates}
+                    layout={layout}
+                    layoutStates={layoutStates}
+                    onChartsChange={(v) => (charts = v)}
+                    onChartStatesChange={(v) => (chartStates = v)}
+                    onLayoutStatesChange={(v) => (layoutStates = v)}
+                  />
+                </div>
+              {/key}
+            </div>
+            <SegmentedControl
+              value={layout}
+              onChange={(v) => (layout = v)}
+              options={[
+                { value: "list", icon: IconListLayout, title: "List layout" },
+                { value: "dashboard", icon: IconDashboardLayout, title: "Dashboard layout" },
+              ]}
             />
-          {/if}
-          <Button
-            icon={IconSettings}
-            title="Settings"
-            onClick={() => (drawerOpen = !drawerOpen)}
+            {#if colorSchemeProp == null}
+              <Button
+                icon={$colorScheme == "dark" ? IconLightMode : IconDarkMode}
+                title="Toggle light / dark mode"
+                onClick={() => {
+                  $userColorScheme = $colorScheme == "light" ? "dark" : "light";
+                }}
+              />
+            {/if}
+            <Button
+              icon={IconSettings}
+              title="Settings"
+              onClick={() => (drawerOpen = !drawerOpen)}
+            />
+          </div>
+        {/if}
+      </div>
+      <!-- Main Content -->
+      <div class="flex-1 overflow-hidden h-full ml-2 mr-2 mb-2">
+        {#if initialized}
+          <LayoutView
+            context={chartContext}
+            layout={layout}
+            layoutStates={layoutStates}
+            charts={charts}
+            chartStates={chartStates}
+            onChartsChange={(v) => (charts = v)}
+            onChartStatesChange={(v) => (chartStates = v)}
+            onLayoutStatesChange={(v) => (layoutStates = v)}
+            registerChartDelegate={registerChartDelegate}
           />
-        </div>
-      {/if}
-    </div>
-    <!-- Main Content -->
-    <div class="flex-1 overflow-hidden h-full ml-2 mr-2 mb-2">
-      {#if initialized}
-        <LayoutView
-          context={chartContext}
-          layout={layout}
-          layoutStates={layoutStates}
-          charts={charts}
-          chartStates={chartStates}
-          onChartsChange={(v) => (charts = v)}
-          onChartStatesChange={(v) => (chartStates = v)}
-          onLayoutStatesChange={(v) => (layoutStates = v)}
-          registerChartDelegate={registerChartDelegate}
-        />
-      {/if}
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -734,22 +903,6 @@
       {/snippet}
     </CommandPalette>
   {/if}
-
-  <!-- Settings drawer: overlays the right edge of the atlas. Stays
-       mounted across open/close so registered chart snippets keep
-       their internal state; visibility is animated by transform on
-       the wrapper, see SettingsDrawer.svelte. -->
-  <SettingsDrawer
-    open={drawerOpen}
-    onClose={() => (drawerOpen = false)}
-    globalContent={globalSettings}
-    pageGroups={[{ key: "search", title: "Search", icon: IconSearch, content: searchSettings }]}
-    chartGroups={chartSettingsGroups}
-    activeKey={activeSettingsKey}
-    onActiveKeyChange={(k) => (activeSettingsKey = k)}
-    mcpStatus={mcpStatus}
-    version={EMBEDDING_ATLAS_VERSION}
-  />
 </div>
 <svelte:window onkeydown={onWindowKeydown} />
 
