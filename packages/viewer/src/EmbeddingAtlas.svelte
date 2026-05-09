@@ -19,6 +19,7 @@
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
   import SettingsDrawer from "./widgets/SettingsDrawer.svelte";
+  import Slider from "./widgets/Slider.svelte";
   import Spinner from "./widgets/Spinner.svelte";
 
   import {
@@ -29,6 +30,7 @@
     IconExport,
     IconLightMode,
     IconListLayout,
+    IconSearch,
     IconSettings,
   } from "./assets/icons.js";
 
@@ -48,7 +50,13 @@
   import { columnDescriptions, distinctCounts, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
 
-  const searchLimit = 500;
+  // Maximum number of results the searcher returns. Reactive so the
+  // user can tune it from the Search settings tab in the drawer; the
+  // searcher's `limit` is read at query-time. Persisted to
+  // localStorage so the choice survives reloads.
+  const SEARCH_LIMIT_KEY = "embedding-atlas:search-limit";
+  const SEARCH_LIMIT_DEFAULT = 500;
+  let searchLimit = $state(SEARCH_LIMIT_DEFAULT);
 
   let {
     coordinator,
@@ -485,6 +493,26 @@
     }
   });
 
+  // Hydrate searchLimit from localStorage on mount; written back on change.
+  $effect(() => {
+    try {
+      const v = localStorage.getItem(SEARCH_LIMIT_KEY);
+      if (v != null) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= 50 && n <= 2000) searchLimit = n;
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(SEARCH_LIMIT_KEY, String(searchLimit));
+    } catch {
+      /* ignore */
+    }
+  });
+
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
   onMount(() => {
@@ -688,6 +716,7 @@
     open={drawerOpen}
     onClose={() => (drawerOpen = false)}
     globalContent={globalSettings}
+    pageGroups={[{ key: "search", title: "Search", icon: IconSearch, content: searchSettings }]}
     chartGroups={chartSettingsGroups}
     activeKey={activeSettingsKey}
     onActiveKeyChange={(k) => (activeSettingsKey = k)}
@@ -755,4 +784,39 @@
   <!-- MCP status and version moved out of the Global tab body and
        into the SettingsDrawer footer, where they stay visible
        regardless of which tab is selected. -->
+{/snippet}
+
+{#snippet searchSettings()}
+  <div class="flex flex-col gap-4">
+    <div>
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+        MAX RESULTS
+      </div>
+      <div class="flex items-center gap-3">
+        <Slider bind:value={searchLimit} min={50} max={2000} step={50} width={220} />
+        <span class="text-sm font-mono text-slate-700 dark:text-slate-200 tabular-nums w-12 text-right">
+          {searchLimit}
+        </span>
+      </div>
+      <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+        Cap on the number of results the searcher returns. The dropdown shows the top 20; the rest land
+        in the table when the filter toggle is on.
+      </div>
+    </div>
+    {#if searchModes.length > 1}
+      <div>
+        <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+          MODE
+        </div>
+        <Select
+          value={searchMode}
+          onChange={(v) => (searchMode = v)}
+          options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
+        />
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+          Full-text matches keywords; vector matches by semantic similarity to the embedding.
+        </div>
+      </div>
+    {/if}
+  </div>
 {/snippet}
