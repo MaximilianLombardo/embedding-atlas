@@ -6,18 +6,14 @@
   import { onMount, setContext } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { writable } from "svelte/store";
-  import { scale } from "svelte/transition";
 
-  import LayoutOptionsView from "./layouts/LayoutOptionsView.svelte";
   import LayoutView from "./layouts/LayoutView.svelte";
   import Resizer from "./layouts/list/Resizer.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
   import AtlasIconStrip from "./widgets/AtlasIconStrip.svelte";
-  import Button from "./widgets/Button.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
-  import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
   import SettingsPanel from "./widgets/SettingsPanel.svelte";
   import Slider from "./widgets/Slider.svelte";
@@ -786,12 +782,10 @@
   bind:this={container}
 >
   <!-- Horizontal flex root: icon strip + (optionally) settings
-       panel + resizer + main content column. Replaces the previous
-       single-column flex (toolbar above, content below). The top
-       toolbar still exists *inside* the main column for this commit
-       so the strip and panel can be cross-checked against the old
-       chrome side-by-side; P2.5 removes the toolbar once the strip
-       is fully wired. -->
+       panel + resizer + main content column. The strip absorbs
+       all the controls that previously lived in the top toolbar
+       (layout selector, show/hide toggles, theme, settings gear);
+       there is no top toolbar anymore. -->
   <div
     class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
     bind:clientWidth={containerWidth}
@@ -825,60 +819,13 @@
       />
     {/if}
 
-    <!-- Main column: toolbar (transitional, removed in P2.5) +
-         content. min-w-0 so the column can shrink when the
-         settings panel grows; without it the toolbar's flex-wrap
-         children would refuse to compress, pushing the layout
-         out past the container. -->
+    <!-- Main column: just content. min-w-0 so the column can
+         shrink when the settings panel grows; without it children
+         that ignore flex shrink (e.g. wide tables, fixed-width
+         Mosaic clients) would refuse to compress and push the
+         layout out past the container. -->
     <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
-      <!-- Toolbar (transitional). -->
-      <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
-        {#if initialized}
-          <div class="flex-1"></div>
-          <div class="flex flex-none flex-row gap-2">
-            <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
-              {#key layout}
-                <div transition:scale class="col-start-1 row-start-1">
-                  <LayoutOptionsView
-                    context={chartContext}
-                    charts={charts}
-                    chartStates={chartStates}
-                    layout={layout}
-                    layoutStates={layoutStates}
-                    onChartsChange={(v) => (charts = v)}
-                    onChartStatesChange={(v) => (chartStates = v)}
-                    onLayoutStatesChange={(v) => (layoutStates = v)}
-                  />
-                </div>
-              {/key}
-            </div>
-            <SegmentedControl
-              value={layout}
-              onChange={(v) => (layout = v)}
-              options={[
-                { value: "list", icon: IconListLayout, title: "List layout" },
-                { value: "dashboard", icon: IconDashboardLayout, title: "Dashboard layout" },
-              ]}
-            />
-            {#if colorSchemeProp == null}
-              <Button
-                icon={$colorScheme == "dark" ? IconLightMode : IconDarkMode}
-                title="Toggle light / dark mode"
-                onClick={() => {
-                  $userColorScheme = $colorScheme == "light" ? "dark" : "light";
-                }}
-              />
-            {/if}
-            <Button
-              icon={IconSettings}
-              title="Settings"
-              onClick={() => (drawerOpen = !drawerOpen)}
-            />
-          </div>
-        {/if}
-      </div>
-      <!-- Main Content -->
-      <div class="flex-1 overflow-hidden h-full ml-2 mr-2 mb-2">
+      <div class="flex-1 overflow-hidden h-full m-2">
         {#if initialized}
           <LayoutView
             context={chartContext}
