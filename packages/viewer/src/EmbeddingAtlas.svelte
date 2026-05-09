@@ -533,10 +533,14 @@
   // Width of the inline settings panel when open. Animated between
   // 0 (closed) and this value (open) by SettingsPanel itself; the
   // resizer between the panel and the main content drives drag
-  // resize. Range matches the right-side charts panel pattern.
-  // P2.6 will persist this to localStorage; for now it's reactive
-  // state with a sensible default.
+  // resize. Persisted to localStorage so the user's chosen width
+  // survives reloads (mirrors the searchLimit / activeSettingsKey
+  // hydration pattern below). Range 240–720 px; values outside this
+  // band on read are ignored and the default kicks in instead.
+  const SETTINGS_PANEL_WIDTH_KEY = "embedding-atlas:settings-panel-width";
   const SETTINGS_PANEL_WIDTH_DEFAULT = 360;
+  const SETTINGS_PANEL_WIDTH_MIN = 240;
+  const SETTINGS_PANEL_WIDTH_MAX = 720;
   let settingsPanelWidth = $state(SETTINGS_PANEL_WIDTH_DEFAULT);
   // Container width for the horizontal flex root, bound via
   // `bind:clientWidth`. Used to clamp the resizer's max value so
@@ -576,6 +580,28 @@
   $effect(() => {
     try {
       localStorage.setItem(SEARCH_LIMIT_KEY, String(searchLimit));
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Hydrate settingsPanelWidth from localStorage on mount; written back on change.
+  $effect(() => {
+    try {
+      const v = localStorage.getItem(SETTINGS_PANEL_WIDTH_KEY);
+      if (v != null) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= SETTINGS_PANEL_WIDTH_MIN && n <= SETTINGS_PANEL_WIDTH_MAX) {
+          settingsPanelWidth = n;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(SETTINGS_PANEL_WIDTH_KEY, String(settingsPanelWidth));
     } catch {
       /* ignore */
     }
@@ -812,8 +838,8 @@
         class="w-1 flex-none bg-slate-300 dark:bg-slate-600 hover:bg-blue-500 dark:hover:bg-blue-400 transition-colors"
         axis="x"
         scaler={1}
-        min={240}
-        max={Math.max(240, containerWidth - 200)}
+        min={SETTINGS_PANEL_WIDTH_MIN}
+        max={Math.min(SETTINGS_PANEL_WIDTH_MAX, Math.max(SETTINGS_PANEL_WIDTH_MIN, containerWidth - 200))}
         value={settingsPanelWidth}
         onChange={(v) => (settingsPanelWidth = v)}
       />
