@@ -8,7 +8,15 @@
   interface Props {
     resolvedTheme: ThemeConfig;
     statusMessage: string | null;
+    /** Number of points currently rendered (after filtering / downsampling). */
     pointCount: number;
+    /**
+     * Total number of points in the underlying source. When provided
+     * and not equal to `pointCount`, the status bar shows
+     * "{pointCount} / {totalCount} points" so a user can see at a
+     * glance how filtering has narrowed the view.
+     */
+    totalCount?: number;
     distancePerPoint: number;
 
     selectionMode: "marquee" | "lasso" | "none";
@@ -19,6 +27,7 @@
     resolvedTheme,
     statusMessage = null,
     pointCount,
+    totalCount,
     distancePerPoint,
     selectionMode,
     onSelectionMode,
@@ -92,6 +101,10 @@
     <div style="border-right: 1px solid currentColor; margin: 4px 2px; opacity: 0.3; width: 0; height: 10px"></div>
     <MapScaleLegend distancePerPoint={distancePerPoint} />
     <div style="border-right: 1px solid currentColor; margin: 4px 2px; opacity: 0.3; width: 0; height: 10px"></div>
-    <span>{pointCount.toLocaleString()} points</span>
+    <span>
+      {pointCount.toLocaleString()}{#if totalCount != null && totalCount !== pointCount}<span style:opacity="0.6"
+          > / {totalCount.toLocaleString()}</span
+        >{/if} points
+    </span>
   </div>
 </div>

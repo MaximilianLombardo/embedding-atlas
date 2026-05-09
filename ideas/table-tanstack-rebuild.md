@@ -1,6 +1,11 @@
 # Table Rebuild — Virtualized, TanStack-Inspired
 
-Status: planning. No code yet. This document is the "measure twice" pass.
+Status: **shipped on `feat/table-virtualized` (PR #24).** v1, Phase 2,
+and the surrounding settings/perf/UX work that landed alongside are
+all merged onto the branch. This doc started as a "measure twice"
+plan; the planning sections below are preserved for context, with
+an **As-built** summary at the top and a **Still open / deferred**
+list at the bottom flagging what's loose.
 
 ## Goal
 
@@ -24,7 +29,132 @@ The user explicitly preferred a **from-scratch Svelte rebuild** over porting
 React patterns line-for-line. That's the right call: the React archive is a
 shape we recognize, not source we copy.
 
-## Current architecture (what we are replacing)
+## As-built (shipped Apr–May 2026)
+
+What's on `feat/table-virtualized` today. The planning narrative below
+is preserved for context, but this section is the source of truth for
+"what does the code do right now."
+
+### v1 — virtualized table (commits `0a19ef3..2f88a66`)
+
+Steps 0–9 of the original plan. The table is fully virtualized and
+silent-by-default for any caller who doesn't open the table tab.
+
+- `packages/viewer/src/charts/instances/lib/table_core.svelte.ts` —
+  thin Svelte 5 runes wrapper around `@tanstack/table-core`.
+  Imperative `setState` / `setOptions`; reactive `getState()` overlay
+  via a state rune so `$derived` reads pick up table-core mutations.
+- `packages/viewer/src/charts/instances/lib/window_loader.svelte.ts` —
+  Mosaic-backed sliding-window cache. Two clients (count + windowed
+  data), both subscribed to `context.filter`. Defaults:
+  `WINDOW_SIZE = 2000`, `OVERSCAN = 1000`, slide throttle 100 ms.
+  Always-commit semantics in `queryResult` so flick-scrolls don't
+  flash skeletons.
+- `packages/viewer/src/charts/instances/lib/use_column_widths.svelte.ts`
+  + `lib/use_column_state.svelte.ts` — localStorage persistence
+  for column widths and combined visibility/order/pinning,
+  cleanup-on-read for stale columns.
+- `packages/viewer/src/charts/instances/Table.svelte` — virtualized
+  via `@tanstack/svelte-virtual`, ROW_HEIGHT=32, padding-row spacers
+  to preserve sticky-header z-ordering. `getElementForId` is async
+  (mirrors the embedding-click-reveal contract).
+- `packages/viewer/src/charts/instances/DetailDrawer.svelte` — D3
+  click-to-open detail panel; reuses `TooltipContent`.
+- `packages/viewer/src/charts/instances/Instances.svelte` — owns
+  the loader, drives `animateToPoint`, mounts Table + DetailDrawer.
+- 100-row paginator removed. `spec.state.offset` repurposed as
+  initial scroll-to-row.
+- Cards view dropped as a peer of Table (commit `68b484f`); the
+  `Cards.svelte` file is kept dormant but unreferenced.
+
+### Phase 2 — bells & whistles (commits `2a02e01..` ish)
+
+- **Column visibility / order / pinning** — drag handle in
+  `ColumnControls.svelte`, pin-left toggle, persistence via
+  `use_column_state.svelte.ts`. table-core integration for
+  `columnSizing` only; the rest is a parent-owned `columnState`
+  rune that drives `visibleColumns` directly (avoids table-core's
+  controlled-state plumbing for the parts we don't need).
+- **Per-column header filters** — `HeaderFilterPopover.svelte`
+  fetches top-100 distinct values for categorical columns,
+  publishes a `column IN (values)` predicate to `context.filter`
+  via a stable per-column source object. List columns
+  (`jsType === "string[]"`) use `list_has_any`. Numeric/date
+  defer to the predicates panel.
+- **CSV export** — reuses `exportMosaicSelection`; predicate
+  is the current cross-filter, computed at click time.
+- **Cards 2D virtualization** — `Cards.svelte` rebuilt with
+  `@tanstack/svelte-virtual`'s `lanes` API (currently dormant
+  per the Cards-as-peer-of-Table removal, but the implementation
+  is intact for future reuse).
+
+### Settings reorganization (post-Phase-2)
+
+- **`ChartDelegate` extended** with `settingsTitle`, `settingsIcon`,
+  `settingsContent` (Snippet). `chart.ts` — backwards-compatible
+  optional fields. Charts register a settings snippet via
+  `registerDelegate`; the host renders them in the settings UI.
+- **`SettingsDrawer.svelte`** — right-edge overlay, 400 px wide,
+  vertical tab strip on the left + tab content + footer
+  (MCP status + version). `Instances.svelte` registers a "Table"
+  tab (`IconTable`); `Embedding.svelte` registers an "Embed" tab
+  (`IconEmbeddingView`) holding the controls that previously
+  lived in the embedding canvas's own gear popup. Active tab key
+  persisted to localStorage.
+- **The previous `PopupButton`-based settings menu was removed.**
+  Top toolbar's right-hand pill (filter count / clear-X / export
+  selection) was relocated: count + clear-X went into the
+  embedding canvas's bottom-right `StatusBar` (extended with a
+  `totalCount` prop in `@embedding-atlas/component`); Export
+  Selection moved into the drawer's Global → Export section.
+
+### Performance fixes (chrono late in the work)
+
+These came up during animation testing of the chart show/hide toggle
+and the slide transitions; documented here because the architecture
+implications outlive the fixes.
+
+- **`ChartView.svelte` screenshot delegate registration is `untrack`-wrapped.**
+  `LayoutView.svelte`'s `chartView` snippet creates a fresh inline
+  arrow for `registerDelegate` on every render. Without `untrack`,
+  the screenshot effect re-fired ~60×/sec during layout transitions,
+  cycling the SvelteMap of registered delegates and amplifying
+  reactive churn through `chartSettingsGroups`.
+- **`Instances.svelte`'s settings-delegate effect is also `untrack`-wrapped**
+  for the same reason.
+- **`ListLayout.svelte`'s table panel stays mounted** across the
+  show/hide-table toggle. Was `{#if hasTable}` + `transition:slide`
+  → mount/unmount cycle every toggle, which made every show pay
+  the full WindowLoader + table-core + virtualizer + 40-column
+  HeaderFilterPopover mount cost (~250 ms synchronous burst).
+  Now CSS `grid-template-rows: 0fr ↔ 1fr` with the chart always in
+  the DOM, paid mount cost once.
+- **Two-layer wrapper for stable virtualizer height during the
+  toggle.** Outer wrapper animates `height: 0px ↔ tableHeight`,
+  inner wrapper holds `height: tableHeight` always. The
+  `@tanstack/svelte-virtual` ResizeObserver only fires on
+  content-rect changes, so the virtualizer never recomputes
+  mid-animation and visible rows are pre-rendered before frame 0.
+- **Column-state derived was originally backed by a manual `$state`
+  tick** in `EmbeddingAtlas.svelte`. That created an infinite loop
+  through the same prop-identity-churn → `chartSettingsGroups`
+  derived → re-render path. Replaced with `SvelteMap` /
+  `SvelteSet` for native reactivity. Lesson: adding reactivity
+  downstream amplifies upstream churn that was previously harmless;
+  insulate at the consumer with `untrack`.
+
+### Surrounding UX cleanups
+
+- **Dark mode** was reaching only the inner content wrapper of the
+  atlas root, not the drawer (which is a sibling overlay). The
+  `class:dark` toggle and `color-scheme` style now live on the
+  `embedding-atlas-root` itself.
+- **Embedding StatusBar count** is now filter-aware:
+  `pointCount / totalCount points` when they differ; plain
+  `pointCount points` when full. The `@embedding-atlas/component`
+  package was rebuilt to ship the StatusBar prop change.
+
+
 
 `Instances.svelte` is the orchestrator. It owns:
 
@@ -553,3 +683,85 @@ internal to the Table component and free to change.
 - No `context.searchResult` subscription in Instances → search-driven
   reveal flows through `context.highlight`, not searchResult.
 - No external callers of `Table.svelte`'s exports beyond `Instances.svelte`.
+
+> **Note:** the "no `registerDelegate` usage in Instances" assumption
+> from the original plan no longer holds — Instances now registers a
+> "Table" settings snippet via `registerDelegate` so its column
+> controls / Export CSV land in the page-level `SettingsDrawer`. See
+> the As-built section above. (Same with Embedding registering an
+> "Embed" tab.)
+
+## Still open / deferred
+
+Things touched-on or mentioned in the work above but not finished.
+
+### Layout reorganization (in design)
+
+We started talking through moving the search bar below the embedding,
+the top-toolbar buttons to a vertical left-edge icon strip, and the
+settings drawer from a right-edge overlay to a left-side inline panel
+(mirroring the existing right-side charts panel pattern). Open
+decisions: search-bar placement (own row vs. overlay vs. inside the
+existing bottom-status pill), settings panel as inline-with-resizer
+vs. overlay, and where the List/Dashboard layout selector lands
+(vertical icon buttons in strip vs. moved into Global tab vs. kept
+in a thin top strip). The search-bar UX is informed by the fact
+that today the search is purely an embedding-visualization tool —
+matching IDs are highlighted in the embedding canvas, not filtered
+into the table — so its physical placement should signal that scope.
+
+### Drawer chrome polish
+
+- **Tab labels overflow at small widths.** Solved for "Table"
+  (short) and "Embed" (shortened from "Embedding"); future chart
+  types will need to pick short labels or we'll need a different
+  tab pattern (icon-only with tooltip?).
+- **Tab strip styling** is hand-rolled Tailwind (slate palette,
+  blue accents). When the design-system port lands, the drawer
+  needs a re-skin against whatever tokens that brings.
+- **Layout selector + theme toggle** still live on the top
+  toolbar; if the layout reorg ships, they move.
+- **Multi-instance disambiguation.** Today any chart registering
+  `settingsTitle: "Table"` (or any duplicate title) will collide
+  in the tab strip. Fine for one-table-per-atlas; needs revisit
+  when dashboards routinely host >1 of the same chart type.
+
+### Per-column header filters — numeric / date
+
+Currently categorical-only (`jsType === "string"` /
+`"string[]"`). Numeric and date columns get a "filter not
+available" placeholder that points at the predicates panel.
+A range slider / histogram brush in the popover would close
+the gap.
+
+### Row-checkbox-as-filter
+
+Mentioned in the original plan as out of scope, never picked
+up. Open question: row selection drives the cross-filter via a
+union (selected rows OR existing predicates) or intersect
+(narrow further). Each option has a different UX and
+different ergonomics for "I want to drill into N rows I see."
+
+### Cards 2D virtualization is dormant
+
+`Cards.svelte` was rebuilt with the `lanes` API but the toggle
+that exposed Cards as a peer of Table was removed. The file is
+intact and could be reused as a record-list surface elsewhere
+(e.g., a search-flyout-like context, or as the body of the
+neighbors view). No active caller today.
+
+### Documentation drift
+
+`packages/docs/overview.md` and any user-facing docs predate
+the table virtualization, the settings drawer, and the perf
+work. Out of scope for this PR but worth a sweep before
+the next release.
+
+### Heatmap rect-band×band runtime bug (#64)
+
+Pre-existing, unrelated to the table work, but flagged in
+parallel. Captured in tasks.
+
+### Area / cumulative-over-time inline charts (#65)
+
+Same story — pre-existing inline-chart polish item, not table.

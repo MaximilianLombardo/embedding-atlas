@@ -873,6 +873,7 @@
       statusMessage={statusMessage ?? webGPUPrompt}
       distancePerPoint={1 / (pointLocation(1, 0).x - pointLocation(0, 0).x)}
       pointCount={data.x.length}
+      totalCount={totalCount ?? undefined}
       selectionMode={selectionMode}
       onSelectionMode={(v) => (selectionMode = v)}
     />

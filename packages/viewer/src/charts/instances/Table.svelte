@@ -1,6 +1,34 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
+<!--
+  Virtualized table.
+
+  Built on three pieces working in tandem:
+
+  1. WindowLoader (lib/window_loader.svelte.ts) — owns a sliding 400-row
+     window over Mosaic. Reads expose a virtual-length view (totalCount)
+     plus rowAt(idx) which returns either an in-memory row or the
+     sentinel "loading" for indices outside the loaded window.
+
+  2. createSvelteTable (lib/table_core.svelte.ts) — table-core wrapped in
+     Svelte 5 runes. Owns header rendering, multi-column sort state,
+     column-resize state. We do NOT use its row models — Mosaic does the
+     row work in SQL. manualSorting/manualFiltering/manualPagination
+     turns those off.
+
+  3. @tanstack/svelte-virtual — virtualizes against virtual length
+     (loader.totalCount). On every range change the virtualizer's store
+     re-emits; we mirror that into a $state and tell the loader the new
+     visible range so it can slide the window.
+
+  Padding-row pattern (rather than absolute positioning) keeps a sticky
+  thead unambiguously above the rows during scroll — see the design doc
+  risk note. Top/bottom spacer rows render with the appropriate height;
+  visible rows render between them in document order.
+-->
 <script lang="ts">
-  import { interactionHandler, type CursorValue } from "@embedding-atlas/utils";
+  import type { ColumnDef, SortingState } from "@tanstack/table-core";
+  import { createVirtualizer, type SvelteVirtualizer } from "@tanstack/svelte-virtual";
+  import { untrack } from "svelte";
 
   import ContentRenderer from "../../renderers/ContentRenderer.svelte";
 
@@ -9,203 +37,493 @@
   import type { ColumnStyle } from "../../renderers/types.js";
   import type { ColumnDesc } from "../../utils/database.js";
   import type { RowID } from "../chart.js";
+  import type { Coordinator, Selection } from "@uwdata/mosaic-core";
+
+  import HeaderFilterPopover from "./HeaderFilterPopover.svelte";
   import { inferColumnFormatters } from "./infer_formatters.js";
+  import { createSvelteTable } from "./lib/table_core.svelte.js";
+  import { type StoredColumnState } from "./lib/use_column_state.svelte.js";
+  import { loadStoredWidths, saveStoredWidths } from "./lib/use_column_widths.svelte.js";
+  import { WindowLoader } from "./lib/window_loader.svelte.js";
   import type { SortOrder } from "./types.js";
 
+  /**
+   * Bundle of plumbing needed for per-column header filters. When
+   * undefined the filter icons are hidden (e.g. custom `spec.query`
+   * mode where the predicate set isn't well-defined).
+   */
+  export interface ColumnFilterContext {
+    coordinator: Coordinator;
+    table: string;
+    filter: Selection;
+    /** Map of column → currently selected values (one entry per active filter). */
+    columnFilters: Record<string, string[]>;
+    /** Stable per-column source object; reused across popover opens. */
+    sourceFor: (column: string) => object;
+    /** Called when the user changes the selection for a column. */
+    onChange: (column: string, values: string[]) => void;
+  }
+
   interface Props {
-    data: Record<string, any>[];
-    columns: string[];
+    loader: WindowLoader;
     columnDescs: ColumnDesc[];
     columnStyles: Record<string, ColumnStyle>;
     defaultColumnWidths: Record<string, number>;
     highlight: RowID[] | null;
     sort?: SortOrder;
+    /**
+     * Identifier for the table-being-shown. Used as the key for
+     * localStorage-persisted column widths (D4). Pass the dataset
+     * table name (e.g. `context.table`) so widths survive reloads
+     * but reset cleanly across distinct datasets.
+     */
+    tableName: string;
+    /**
+     * Bidirectional column state (visibility / order / pinning).
+     * Owner is the parent (`Instances.svelte`) — Table reflects it
+     * into table-core's controlled state and writes user edits back
+     * via the bind. localStorage persistence also lives in the parent.
+     */
+    columnState?: StoredColumnState;
+    /** Per-column filter plumbing. When undefined, header filter icons hide. */
+    filterContext?: ColumnFilterContext;
     onRowClick: (rowId: RowID | null | undefined, event: MouseEvent) => void;
+    /**
+     * Fired on row double-click. Receives the full row record so the
+     * detail drawer can render every field without refetching.
+     */
+    onRowDoubleClick: (row: Record<string, any>, event: MouseEvent) => void;
     onSortChange: (sort: SortOrder | undefined) => void;
   }
 
   let {
-    data,
-    columns,
+    loader,
     columnDescs,
     columnStyles,
     defaultColumnWidths,
     highlight,
     sort,
+    tableName,
+    columnState = $bindable({ visibility: {}, order: [], pinning: { left: [] } }),
+    filterContext,
     onRowClick,
+    onRowDoubleClick,
     onSortChange,
   }: Props = $props();
 
+  // Uniform row height. Tightening from the previous 44px makes the
+  // virtualizer's index↔offset math O(1) and shows more rows per
+  // viewport. Detail-drawer (D3) replaces in-place expand for long cells.
+  const ROW_HEIGHT = 32;
+
   let highlightSet = $derived(new Set(highlight));
-  let columnFormatters = $derived(inferColumnFormatters(data, columns));
+  let columnFormatters = $derived(inferColumnFormatters(loader.windowRows, loader.columns));
 
-  let idMapper = new Map<RowID, Element>();
+  // Column widths live in table-core's controlled `columnSizing` state
+  // (seeded by defaultColumnWidths via `initialState` on the table
+  // below). User drags fire onStateChange which the runes wrapper
+  // mirrors into a $state rune; reads of `table.getState()` then
+  // become reactive. Step 6 will layer localStorage persistence by
+  // seeding from + writing to that same slice.
+  let scrollEl = $state.raw<HTMLDivElement | undefined>(undefined);
 
-  // Table UI state (owned by Table component)
-  let columnWidths = $state.raw<Record<string, number>>({});
+  // Track which row id is rendered at which DOM element. Used by
+  // animateToPoint via getElementForId. Map only tracks currently-rendered
+  // rows (others are virtualized away), so getElementForId is async — it
+  // waits up to a short budget for the row to render after a
+  // scrollToIndex.
+  const idMapper = new Map<RowID, Element>();
 
-  let expandedRows = $state.raw<Set<number>>(new Set());
-  let hoveredCell = $state.raw<{ row: number; col: string } | null>(null);
+  // Render-time projection of the sort prop. Headers display sort
+  // indicators based on this — table-core itself doesn't own sort state
+  // here (we don't use sorted row models). Controlled-from-outside
+  // semantics live in the prop, not in table-core's internal state.
+  let sortingState = $derived<SortingState>(
+    (sort ?? []).map((s) => ({ id: s.column, desc: s.direction === "descending" })),
+  );
 
-  // Get text alignment class based on column type from schema
+  // Right-aligned for numeric columns; matches the pre-rebuild rule.
   function getAlignment(column: string): string {
-    const columnDesc = columnDescs.find((col) => col.name === column);
-    if (columnDesc?.jsType === "number") {
-      return "text-right";
-    }
-    return "text-left";
+    const desc = columnDescs.find((c) => c.name === column);
+    return desc?.jsType === "number" ? "text-right" : "text-left";
   }
 
-  function isCellClamped(content: any): boolean {
-    return String(content).length > 100;
-  }
+  // Build a TanStack column def per logical column. accessorKey is
+  // unused at render time (we read row[col] directly) but is required
+  // for table-core to link headers to data.
+  let tanstackColumns = $derived<ColumnDef<Record<string, any>>[]>(
+    loader.columns.map((col) => ({
+      id: col,
+      header: col,
+      accessorKey: col,
+      enableResizing: true,
+      enableSorting: true,
+      enableHiding: true,
+      size: defaultColumnWidths[col] ?? 150,
+    })),
+  );
 
-  function toggleRowExpansion(rowIndex: number) {
-    expandedRows = new Set(
-      expandedRows.has(rowIndex) ? [...expandedRows].filter((i) => i !== rowIndex) : [...expandedRows, rowIndex],
+  // Seed initial column sizing from defaults *and* localStorage
+  // (cleanup-on-read prunes entries for columns that no longer exist
+  // in this dataset). Defaults fill any column the user hasn't yet
+  // resized; stored widths win where both are present.
+  // svelte-ignore state_referenced_locally
+  const initialColumnSizing: Record<string, number> = {
+    ...defaultColumnWidths,
+    ...loadStoredWidths(tableName, loader.columns),
+  };
+
+  const table = createSvelteTable<Record<string, any>>(() => ({
+    data: loader.windowRows,
+    columns: tanstackColumns,
+    initialState: {
+      columnSizing: initialColumnSizing,
+    },
+    manualSorting: true,
+    manualFiltering: true,
+    manualPagination: true,
+    enableColumnResizing: true,
+    columnResizeMode: "onChange",
+  }));
+
+  // Note: column visibility / order / pinning are driven by the
+  // parent-owned `columnState` directly (see `visibleColumns` below).
+  // table-core's matching state slices are unused — they require
+  // controlled-state plumbing for reactivity that doesn't pay off
+  // here, given we already have a clean Svelte 5 source of truth.
+
+  // Live column width map. Kept as a $derived over table state so the
+  // template can width-style cells reactively. Reads `table.getState()`
+  // which the runes wrapper hooks into the state rune.
+  let columnSizing = $derived<Record<string, number>>(table.getState().columnSizing ?? {});
+
+  // Visible columns in render order. Pinned-left columns come first
+  // (in the order the user pinned them), then the rest of the
+  // current order with hidden columns dropped.
+  //
+  // Reactive on columnState (rune, bound from parent) and
+  // loader.columns; both trigger re-render.
+  let visibleColumns = $derived.by<string[]>(() => {
+    const pinned = columnState.pinning.left.filter(
+      (c) => loader.columns.includes(c) && columnState.visibility[c] !== false,
     );
+    const pinnedSet = new Set(pinned);
+    const orderSet = new Set(columnState.order);
+    const fromOrder = columnState.order.filter((c) => loader.columns.includes(c) && !pinnedSet.has(c));
+    const remaining = loader.columns.filter((c) => !orderSet.has(c) && !pinnedSet.has(c));
+    const tail = [...fromOrder, ...remaining].filter((c) => columnState.visibility[c] !== false);
+    return [...pinned, ...tail];
+  });
+
+  // Cumulative left offset for pinned columns: paper_id at left:0,
+  // next pinned at paper_id_width, etc. Used by the sticky CSS in
+  // headers and cells. Non-pinned columns get null.
+  let pinnedLeftOffsets = $derived.by<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    let acc = 0;
+    for (const c of columnState.pinning.left) {
+      if (!loader.columns.includes(c) || columnState.visibility[c] === false) continue;
+      out[c] = acc;
+      acc += columnSizing[c] ?? 150;
+    }
+    return out;
+  });
+
+  function isPinnedLeft(column: string): boolean {
+    return column in pinnedLeftOffsets;
+  }
+  function isLastPinnedLeft(column: string): boolean {
+    if (!isPinnedLeft(column)) return false;
+    const pinned = Object.keys(pinnedLeftOffsets);
+    return pinned[pinned.length - 1] === column;
   }
 
-  // Column resizing handlers
-  function handleResizeStart(column: string) {
-    return (e1: CursorValue) => {
-      let startWidth = columnWidths[column] ?? defaultColumnWidths[column] ?? 150;
-      return {
-        move: (e2: CursorValue) => {
-          let newWidth = startWidth + e2.clientX - e1.clientX;
-          newWidth = Math.max(60, newWidth);
-          columnWidths = { ...columnWidths, [column]: newWidth };
-        },
-      };
+  // Persist widths to localStorage on change (D4). Debounced because
+  // columnResizeMode "onChange" fires per drag-frame; localStorage
+  // writes are cheap but writing 60×/sec is wasteful.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const sizing = columnSizing;
+    if (Object.keys(sizing).length === 0) return;
+    if (saveTimer != null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveStoredWidths(tableName, sizing);
+      saveTimer = null;
+    }, 200);
+    return () => {
+      if (saveTimer != null) {
+        clearTimeout(saveTimer);
+        // On unmount, flush whatever we had pending so a quick close
+        // after a resize doesn't lose the last value.
+        saveStoredWidths(tableName, sizing);
+        saveTimer = null;
+      }
     };
+  });
+
+  // Combined column state (visibility/order/pinning) persistence
+  // happens in the parent (Instances.svelte). The $effect above keeps
+  // `columnState` in sync with table-core, and the parent watches
+  // that for write-through.
+
+  // Virtualizer: wraps virtual-core in a Svelte store. Subscribe and
+  // mirror into a $state so $effect/$derived can read it the runes way.
+  // svelte-ignore state_referenced_locally
+  const virtualizerStore = createVirtualizer<HTMLDivElement, HTMLTableRowElement>({
+    count: loader.totalCount,
+    getScrollElement: () => scrollEl ?? null,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  });
+  // virtualizerStore emits the SAME Virtualizer instance on every range
+  // change (the instance's internal state mutates in place). A
+  // $state.raw rune compares by Object.is, so assigning the same
+  // reference doesn't trigger reactivity. We use a tick counter
+  // bumped on each emission to drive Svelte derivations off the
+  // virtualizer's mutable state.
+  let virtualizer: SvelteVirtualizer<HTMLDivElement, HTMLTableRowElement> | undefined;
+  let virtualizerTick = $state(0);
+
+  $effect(() => {
+    return virtualizerStore.subscribe((v) => {
+      // The subscriber may fire synchronously inside another effect's
+      // body (e.g. when count-updating setOptions triggers store.set).
+      // Without untrack, the read+write of `virtualizerTick` inside
+      // that effect's tracking scope adds tick as a dep of the *outer*
+      // effect, which then re-fires on every tick bump → infinite
+      // update loop. untrack breaks the cross-dependency.
+      untrack(() => {
+        virtualizer = v;
+        virtualizerTick++;
+      });
+    });
+  });
+
+  // Push count updates into the virtualizer when totalCount changes.
+  // setOptions triggers an internal range recompute and re-emit on the
+  // store, so virtualizerTick bumps via the subscribe path above.
+  $effect(() => {
+    const count = loader.totalCount;
+    untrack(() => {
+      virtualizer?.setOptions({ count });
+    });
+  });
+
+  // Tell the loader the visible range — it slides the window if needed.
+  // Wrap ensureRange in untrack so internal reads of loader state don't
+  // become dependencies of *this* effect; only virtualizerTick should
+  // re-fire it.
+  $effect(() => {
+    void virtualizerTick;
+    untrack(() => {
+      if (!virtualizer) return;
+      const r = virtualizer.range;
+      if (r) loader.ensureRange(r.startIndex, r.endIndex);
+    });
+  });
+
+  // Visible items. Each carries {index, key, size, start, end, lane}.
+  // The `void virtualizerTick` reads make these derivations track the
+  // tick rune; without it, range changes (which mutate in place rather
+  // than swapping the virtualizer instance) wouldn't re-fire the
+  // derived.
+  let virtualItems = $derived.by(() => {
+    void virtualizerTick;
+    return virtualizer?.getVirtualItems() ?? [];
+  });
+  let totalSize = $derived.by(() => {
+    void virtualizerTick;
+    return virtualizer?.getTotalSize() ?? 0;
+  });
+  // Padding-row spacers — keep the rendered rows in document order for
+  // sticky-header z-ordering. Top spacer pushes the first visible row
+  // down to its true Y; bottom spacer fills the remainder.
+  let paddingTop = $derived(virtualItems.length > 0 ? virtualItems[0].start : 0);
+  let paddingBottom = $derived(
+    virtualItems.length > 0 ? totalSize - virtualItems[virtualItems.length - 1].end : 0,
+  );
+
+  // Async row-element resolver. Used by animateToPoint after a scrollToIndex
+  // — the row may not be in the DOM yet when called, since the virtualizer
+  // schedules its render after the scroll commits. Resolve once the
+  // idMapper sees the id, with a short polling budget.
+  export async function getElementForId(id: RowID): Promise<Element | undefined> {
+    if (idMapper.has(id)) return idMapper.get(id);
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (idMapper.has(id)) return resolve(idMapper.get(id));
+        if (Date.now() - start > 1500) return resolve(undefined);
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
   }
 
-  function columnSortOrder(
-    column: string,
-    sort: SortOrder | undefined,
-  ): { order: "ascending" | "descending" | undefined; isPrimary: boolean } | undefined {
-    let index = sort?.findIndex((x) => x.column == column) ?? -1;
-    if (index < 0) {
+  /** Imperative scroll target, used by animateToPoint and reset-on-sort. */
+  export function scrollToIndex(index: number, align: "start" | "center" | "end" = "center"): void {
+    // For index=0 we set scrollTop directly: when the loader is in
+    // the middle of a rebuild (params change), totalCount may
+    // momentarily be 0 and virtualizer.scrollToIndex would have
+    // nothing to scroll to. The DOM scroll has no such constraint.
+    if (index === 0 && align === "start") {
+      if (scrollEl) scrollEl.scrollTop = 0;
       return;
     }
-    return { order: sort?.[index].direction, isPrimary: index == 0 };
-  }
-
-  function changeColumnSortOrder(column: string, order: "ascending" | "descending" | undefined) {
-    let newSort: SortOrder = [];
-    if (order != undefined) {
-      newSort = [{ column: column, direction: order }, ...(sort?.filter((x) => x.column != column) ?? [])];
-    } else {
-      newSort = sort?.filter((x) => x.column != column) ?? [];
-    }
-    onSortChange(newSort.length == 0 ? undefined : newSort);
-  }
-
-  export function getElementForId(id: RowID): Element | undefined {
-    return idMapper.get(id);
+    virtualizer?.scrollToIndex(index, { align });
   }
 </script>
 
-<table class="border-separate border-spacing-0 table-fixed w-full">
-  <thead class="sticky top-0 z-10 bg-white dark:bg-black">
-    <tr>
-      {#each columns as column}
-        {@const sortOrder = columnSortOrder(column, sort)}
-        {@const sortButtonHighlight = sortOrder?.isPrimary ?? false}
-        {@const width = columnWidths[column] ?? defaultColumnWidths[column] ?? 150}
-        <th
-          class="px-4 py-1.5 font-normal text-slate-400 dark:text-slate-500 border-b border-slate-200 dark:border-slate-800 whitespace-nowrap relative group {getAlignment(
-            column,
-          )}"
-          style:width="{width}px"
-        >
-          <div class="flex gap-2 items-center">
-            <div class="flex-1 truncate">{column}</div>
-            <button
-              onclick={() =>
-                changeColumnSortOrder(
-                  column,
-                  sortOrder == undefined ? "ascending" : sortOrder.order == "ascending" ? "descending" : undefined,
-                )}
-            >
-              <div
-                class:text-slate-300={!sortButtonHighlight}
-                class:dark:text-slate-600={!sortButtonHighlight}
-                class:text-slate-600={sortButtonHighlight}
-                class:dark:text-slate-200={sortButtonHighlight}
-              >
-                {#if sortOrder?.order == "ascending"}
-                  <IconSortUp />
-                {:else if sortOrder?.order == "descending"}
-                  <IconSortDown />
-                {:else}
-                  <IconSortUpDown />
-                {/if}
-              </div>
-            </button>
-          </div>
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            class="absolute -right-[5px] top-0.5 bottom-0.5 w-[12px] cursor-col-resize flex items-center justify-center z-20"
-            use:interactionHandler={{ drag: handleResizeStart(column) }}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize column"
+<div class="w-full h-full overflow-auto" bind:this={scrollEl}>
+  <table class="border-separate border-spacing-0 table-fixed w-full">
+    <thead class="sticky top-0 z-10 bg-white dark:bg-black">
+      <tr>
+        {#each visibleColumns as column (column)}
+          {@const header = (table.getHeaderGroups()[0]?.headers ?? []).find((h) => h.column.id === column)}
+          {#if header}
+          {@const sortDir = sortingState.find((s) => s.id === column)}
+          {@const sortIsPrimary = sortingState[0]?.id === column}
+          {@const width = columnSizing[column] ?? 150}
+          {@const pinned = isPinnedLeft(column)}
+          {@const lastPinned = isLastPinnedLeft(column)}
+          <th
+            class="px-4 py-1.5 font-normal text-slate-400 dark:text-slate-500 border-b border-slate-200 dark:border-slate-800 whitespace-nowrap relative group {getAlignment(column)}"
+            class:sticky={pinned}
+            class:left-0={pinned}
+            class:bg-white={pinned}
+            class:dark:bg-black={pinned}
+            class:border-r-2={lastPinned}
+            class:border-r-slate-300={lastPinned}
+            class:dark:border-r-slate-700={lastPinned}
+            style:width="{width}px"
+            style:left={pinned ? `${pinnedLeftOffsets[column]}px` : undefined}
+            style:z-index={pinned ? 20 : undefined}
           >
-            <div class="w-[2px] h-5 bg-slate-400 dark:bg-slate-500 opacity-20 rounded-sm"></div>
-          </div>
-        </th>
-      {/each}
-      <th class="border-b border-slate-200 dark:border-slate-800"></th>
-    </tr>
-  </thead>
-  <tbody>
-    {#each data as row, index}
-      {@const rowId = row.__id__}
-      <tr
-        class="transition-colors {highlightSet.has(rowId)
-          ? 'bg-blue-100 dark:bg-blue-950'
-          : index % 2 === 0
-            ? 'bg-white dark:bg-black hover:bg-blue-50 dark:hover:bg-blue-950'
-            : 'bg-slate-50 dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-blue-950'}"
-        onclick={(e) => onRowClick(rowId, e)}
-        onmousedown={(e) => {
-          // Prevent text selection when shift-click to multi-select
-          if (e.shiftKey || e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-          }
-        }}
-        bind:this={() => idMapper.get(rowId), (v) => idMapper.set(rowId, v)}
-      >
-        {#each columns as column}
-          <td
-            class="px-4 py-1.5 text-slate-500 dark:text-slate-400 align-top overflow-hidden relative {getAlignment(
-              column,
-            )}"
-            onmouseenter={() => (hoveredCell = { row: index, col: column })}
-            onmouseleave={() => (hoveredCell = null)}
-          >
-            <div
-              class="overflow-wrap-anywhere"
-              class:line-clamp-3={!expandedRows.has(index) && isCellClamped(row[column])}
-            >
-              <ContentRenderer value={row[column]} style={columnStyles[column]} formatter={columnFormatters[column]} />
-            </div>
-            {#if !expandedRows.has(index) && isCellClamped(row[column]) && hoveredCell?.row === index && hoveredCell?.col === column}
+            <div class="flex gap-2 items-center">
+              <div class="flex-1 truncate">{column}</div>
               <button
-                class="absolute bottom-0.5 right-0.5 text-xs px-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  toggleRowExpansion(index);
+                onclick={() => {
+                  // Cycle: unsorted → ascending → descending → unsorted.
+                  // We push directly through onSortChange (rather than
+                  // table.toggleSorting) so multi-column sort semantics
+                  // mirror the legacy behavior: a fresh click on a column
+                  // promotes it to primary, leaving secondary sorts intact
+                  // when the new direction is set.
+                  const order = sortDir == undefined ? "ascending" : sortDir.desc ? undefined : "descending";
+                  let newSort: SortOrder = [];
+                  if (order != undefined) {
+                    newSort = [
+                      { column, direction: order },
+                      ...(sort?.filter((x) => x.column != column) ?? []),
+                    ];
+                  } else {
+                    newSort = sort?.filter((x) => x.column != column) ?? [];
+                  }
+                  onSortChange(newSort.length === 0 ? undefined : newSort);
                 }}
               >
-                ↘
+                <div
+                  class:text-slate-300={!sortIsPrimary}
+                  class:dark:text-slate-600={!sortIsPrimary}
+                  class:text-slate-600={sortIsPrimary}
+                  class:dark:text-slate-200={sortIsPrimary}
+                >
+                  {#if sortDir?.desc === false}
+                    <IconSortUp />
+                  {:else if sortDir?.desc === true}
+                    <IconSortDown />
+                  {:else}
+                    <IconSortUpDown />
+                  {/if}
+                </div>
               </button>
-            {/if}
-          </td>
+              {#if filterContext}
+                <HeaderFilterPopover
+                  {column}
+                  columnDesc={columnDescs.find((c) => c.name === column)}
+                  coordinator={filterContext.coordinator}
+                  table={filterContext.table}
+                  filter={filterContext.filter}
+                  source={filterContext.sourceFor(column)}
+                  selected={filterContext.columnFilters[column] ?? []}
+                  onSelectionChange={(values) => filterContext.onChange(column, values)}
+                />
+              {/if}
+            </div>
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <div
+              class="absolute -right-[5px] top-0.5 bottom-0.5 w-[12px] cursor-col-resize flex items-center justify-center z-20"
+              onmousedown={header.getResizeHandler()}
+              ontouchstart={header.getResizeHandler()}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize column"
+            >
+              <div class="w-[2px] h-5 bg-slate-400 dark:bg-slate-500 opacity-20 rounded-sm"></div>
+            </div>
+          </th>
+          {/if}
         {/each}
-        <td></td>
+        <th class="border-b border-slate-200 dark:border-slate-800"></th>
       </tr>
-    {/each}
-  </tbody>
-</table>
+    </thead>
+    <tbody>
+      {#if paddingTop > 0}
+        <tr style:height="{paddingTop}px"><td colspan={visibleColumns.length + 1}></td></tr>
+      {/if}
+      {#each virtualItems as vRow (vRow.key)}
+        {@const row = loader.rowAt(vRow.index)}
+        {#if row === "loading" || row === undefined}
+          <tr style:height="{vRow.size}px" class="bg-slate-50 dark:bg-slate-900/50 animate-pulse">
+            <td colspan={visibleColumns.length + 1} class="px-4 text-xs text-slate-300 dark:text-slate-700">
+              <!-- intentional empty content: skeleton row -->
+            </td>
+          </tr>
+        {:else}
+          {@const rowId = row.__id__}
+          {@const isHL = highlightSet.has(rowId)}
+          <tr
+            class="{isHL
+              ? 'bg-blue-100 dark:bg-blue-950'
+              : vRow.index % 2 === 0
+                ? 'bg-white dark:bg-black hover:bg-blue-50 dark:hover:bg-blue-950'
+                : 'bg-slate-50 dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-blue-950'}"
+            style:height="{vRow.size}px"
+            onclick={(e) => onRowClick(rowId, e)}
+            ondblclick={(e) => onRowDoubleClick(row, e)}
+            onmousedown={(e) => {
+              if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault();
+            }}
+            bind:this={() => idMapper.get(rowId), (v) => {
+              if (v) idMapper.set(rowId, v);
+              else idMapper.delete(rowId);
+            }}
+          >
+            {#each visibleColumns as column (column)}
+              {@const pinned = isPinnedLeft(column)}
+              {@const lastPinned = isLastPinnedLeft(column)}
+              <td
+                class="px-4 py-1 text-slate-500 dark:text-slate-400 align-middle truncate {getAlignment(column)}"
+                class:sticky={pinned}
+                class:left-0={pinned}
+                class:border-r-2={lastPinned}
+                class:border-r-slate-300={lastPinned}
+                class:dark:border-r-slate-700={lastPinned}
+                class:bg-inherit={pinned}
+                style:max-width="{columnSizing[column] ?? 150}px"
+                style:left={pinned ? `${pinnedLeftOffsets[column]}px` : undefined}
+                style:z-index={pinned ? 5 : undefined}
+              >
+                <ContentRenderer value={row[column]} style={columnStyles[column]} formatter={columnFormatters[column]} />
+              </td>
+            {/each}
+            <td></td>
+          </tr>
+        {/if}
+      {/each}
+      {#if paddingBottom > 0}
+        <tr style:height="{paddingBottom}px"><td colspan={visibleColumns.length + 1}></td></tr>
+      {/if}
+    </tbody>
+  </table>
+</div>

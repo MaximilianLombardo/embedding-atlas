@@ -1,22 +1,57 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
+<!--
+  Orchestrator for the table / cards view.
+
+  Owns:
+  - WindowLoader (lib/window_loader.svelte.ts) — single source of truth
+    for total count, currently-loaded window, columns, and offsetForId.
+    Replaces the two ad-hoc Mosaic clients the pre-rebuild orchestrator
+    held inline.
+  - View-mode toggle (table | cards).
+  - SortOrderControl (drives spec.sort).
+  - Highlight isolation (writes to context.highlight without bouncing
+    back through external highlight subscribers — preserves the legacy
+    contract).
+  - animateToPoint(id) — embedding-click → table-row reveal. With
+    virtualization this is offsetForId → scrollToIndex → wait for the
+    row to render → scrollIntoView, since virtualizer.scrollToIndex is
+    coarse-grained (centers on the index but doesn't guarantee the row
+    is in DOM yet).
+  - Detail-drawer state (detailRowId) — D3, populated on row double-click.
+
+  Per D1, pagination is dropped: no PaginatorControls, no Next-Page
+  button. spec.state.offset is repurposed as initial scroll-to row index
+  on mount so user position survives reload.
+-->
 <script lang="ts">
   import { deepMemo } from "@embedding-atlas/utils";
-  import { makeClient } from "@uwdata/mosaic-core";
-  import * as SQL from "@uwdata/mosaic-sql";
   import { untrack } from "svelte";
 
-  import PaginatorControls from "../../widgets/PaginatorControls.svelte";
-  import SegmentedControl from "../../widgets/SegmentedControl.svelte";
-  import Cards from "./Cards.svelte";
+  import { IconDownload, IconTable } from "../../assets/icons.js";
+  import ActionButton from "../../widgets/ActionButton.svelte";
+  import ColumnControls from "./ColumnControls.svelte";
+  import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
 
-  import { IconCardView, IconRight, IconTableView } from "../../assets/icons.js";
-  import type { ColumnStyle } from "../../renderers/types.js";
+  // The Cards view as a sub-mode of Instances was removed — the
+  // Table/Cards segmented toggle lived here previously, but Cards isn't
+  // really a peer of Table from a UX standpoint (different toolbar,
+  // different interaction model). `Cards.svelte` remains in the
+  // codebase for future reuse (e.g. as a record-list surface in
+  // search-flyout-style contexts) but no longer ships in this view.
+  import { predicateToString } from "../../utils/database.js";
+  import { downloadBuffer } from "../../utils/download.js";
+  import { exportMosaicSelection } from "../../utils/mosaic_exporter.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
-  import { instancesQuery } from "./query.js";
-  import type { InstancesSpec, InstancesState, SortOrder } from "./types.js";
+  import {
+    loadStoredColumnState,
+    saveStoredColumnState,
+    type StoredColumnState,
+  } from "./lib/use_column_state.svelte.js";
+  import { WindowLoader } from "./lib/window_loader.svelte.js";
+  import type { InstancesSpec, InstancesState } from "./types.js";
 
   let {
     context,
@@ -25,6 +60,7 @@
     height,
     onSpecChange,
     onStateChange,
+    registerDelegate,
   }: ChartViewProps<InstancesSpec, InstancesState> = $props();
 
   // svelte-ignore state_referenced_locally
@@ -37,365 +73,372 @@
   let highlight = context.highlight;
   let isolatedHighlight = isolatedWritable(highlight);
 
-  let viewMode = $derived((spec.viewMode ?? "table") as "table" | "cards");
-  let offset = $derived(chartState.offset ?? 0);
-  let pageSize = $derived(spec.pageSize ?? 100);
+  // pageSize is repurposed (D2) as a sliding-window size hint. If unset,
+  // we autocompute from the typical viewport later when the loader
+  // initializes; the constant here is a stable default for spec
+  // round-tripping.
+  let windowSize = $derived(spec.pageSize ?? 400);
 
-  let contentView = $state.raw<Table | Cards | undefined>(undefined);
-  let viewContainer = $state.raw<HTMLElement | undefined>(undefined);
+  let contentView = $state.raw<Table | undefined>(undefined);
 
-  // Column widths (local state, not persisted)
+  // Default column widths: seeded by WindowLoader during prepare from a
+  // 10-row sample. Local state keyed by column name; passed to Table to
+  // seed table-core's columnSizing initial state.
   let defaultColumnWidths = $state.raw<Record<string, number>>({});
 
-  // Subscribe to highlight changes
+  // Detail-drawer state for D3. Populated on row double-click; surfaces
+  // a side panel with all fields. Lives here so the drawer survives
+  // table refetches. We hold the row record itself rather than just an
+  // id — the table already had it on hand at click time, so re-fetching
+  // would be wasted work.
+  let detailRow = $state.raw<Record<string, any> | null>(null);
+
+  // Combined column state (visibility / order / pinning). Owned here
+  // so ColumnControls (in the page-level settings menu) can write
+  // directly while Table reflects it into table-core's controlled
+  // state. Initialized on the first time the loader's column list
+  // arrives — see the $effect below.
+  let columnState = $state<StoredColumnState>({ visibility: {}, order: [], pinning: { left: [] } });
+  let columnStateSeeded = false;
+  let columnStateSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Highlight subscription: legacy animateToPoint contract. When a
+  // single new id enters the highlight set externally (e.g. an embedding
+  // click), reveal it in the table.
   $effect.pre(() => {
     let isOnMount = true;
     let previousValue: RowID[] | null = null;
     return isolatedHighlight.subscribe((v) => {
-      // Don't animate immediately on mount.
       if (isOnMount) {
         isOnMount = false;
         previousValue = v;
         return;
       }
-      // Animate when a single new point is added.
-      let newIDs = v ?? [];
-      let oldIDs = previousValue ?? [];
-      let enteringIDs = newIDs.filter((x) => oldIDs.indexOf(x) < 0);
-      if (enteringIDs.length == 1) {
+      const newIDs = v ?? [];
+      const oldIDs = previousValue ?? [];
+      const enteringIDs = newIDs.filter((x) => oldIDs.indexOf(x) < 0);
+      if (enteringIDs.length === 1) {
         animateToPoint(enteringIDs[0]);
       }
       previousValue = v;
     });
   });
 
-  interface Data {
-    data: Record<string, any>[];
-    columns: string[];
-    offset: number;
-
-    offsetForId?: (id: RowID) => Promise<number | undefined>;
-  }
-
-  // Data loading
-  let totalCount = $state.raw(0);
-  let data = $state.raw<Data | undefined>(undefined);
-
-  // Derive current page and page count for PaginatorControls
-  let currentPage = $derived(Math.floor(offset / pageSize));
-  let pageCount = $derived(Math.ceil(totalCount / pageSize));
-
-  // Reset the offset and scroll to top.
-  function resetOffset() {
-    untrack(() => {
-      if (offset != 0) {
-        onStateChange({ offset: 0 });
-      }
-      if (viewContainer) {
-        viewContainer.scrollTop = 0;
-      }
-    });
-  }
-
-  function createClients(options: {
-    query?: string;
-    columns?: string[];
-    columnStyles: Record<string, ColumnStyle>;
-    sort?: SortOrder;
-    pageSize: number;
-  }) {
-    let isOriginalTable = options.query == undefined;
-    let baseQuery = (predicate?: SQL.FilterExpr | null) =>
-      instancesQuery({ query: options.query, table: context.table, predicate: predicate });
-
-    // Build orderby expressions from sort specification
-    let orderByExprs = (options.sort ?? []).map((s) => {
-      let col = SQL.column(s.column);
-      return s.direction === "descending" ? SQL.desc(col) : SQL.asc(col);
-    });
-
-    let columnNames: string[] = [];
-    let lastQueryOffset = 0;
-    let lastQueryPredicate: SQL.FilterExpr | undefined = undefined;
-
-    let clientTotal = makeClient({
-      coordinator: context.coordinator,
-      selection: context.filter,
-      query: (predicate) => {
-        return SQL.Query.from(baseQuery(predicate)).select({ count: SQL.count() });
-      },
-      queryResult: (result: any) => {
-        totalCount = result.get(0).count;
-      },
-    });
-
-    let client = makeClient({
-      coordinator: context.coordinator,
-      selection: context.filter,
-      prepare: async () => {
-        let desc = await context.coordinator.query(SQL.Query.describe(baseQuery()));
-        columnNames = desc.toArray().map((x) => x.column_name);
-        if (options.columns) {
-          let specifiedColumns = new Set(options.columns);
-          columnNames = columnNames.filter((x) => specifiedColumns.has(x));
-        }
-        // Filter out hidden columns
-        columnNames = columnNames.filter((col) => options.columnStyles[col]?.display !== "hidden");
-
-        // Get sample data for column widths
-        let widthQuery = SQL.Query.from(baseQuery())
-          .select(
-            Object.fromEntries([
-              ...(isOriginalTable ? [["__id__", SQL.column(context.id)]] : []),
-              ...columnNames.map((x) => [x, SQL.column(x)]),
-            ]),
-          )
-          .limit(10)
-          .offset(0);
-        let widthResult = await context.coordinator.query(widthQuery);
-        let sampleData = widthResult.toArray();
-        defaultColumnWidths = Object.fromEntries(
-          columnNames.map((col) => [
-            col,
-            sampleData.reduce(
-              (max: number, row: any) => Math.max(max, widthForContent(row[col])),
-              widthForContent(col), // Also take column name into account
-            ),
-          ]),
-        );
-      },
-      query: (predicate) => {
-        lastQueryOffset = offset;
-        lastQueryPredicate = predicate;
-        return SQL.Query.from(baseQuery(predicate))
-          .select(
-            Object.fromEntries([
-              ...(isOriginalTable ? [["__id__", SQL.column(context.id)]] : []),
-              ...columnNames.map((x) => [x, SQL.column(x)]),
-            ]),
-          )
-          .orderby(orderByExprs)
-          .limit(options.pageSize)
-          .offset(offset);
-      },
-      queryResult: (result: any) => {
-        data = {
-          data: result.toArray(),
-          columns: columnNames,
-          offset: lastQueryOffset,
-          offsetForId: isOriginalTable
-            ? async (id) => {
-                // Build ROW_NUMBER window function with same sort order as main query
-                let idOffset = SQL.Query.from(baseQuery(lastQueryPredicate)).select({
-                  id: SQL.column(context.id),
-                  offset: orderByExprs.length > 0 ? SQL.row_number().orderby(...orderByExprs) : SQL.row_number(),
-                });
-                let query = SQL.Query.from(idOffset)
-                  .select({ offset: SQL.column("offset") })
-                  .where(SQL.eq(SQL.column("id"), SQL.literal(id)));
-                let result = await context.coordinator.query(query);
-                return result.get(0)?.offset;
-              }
-            : undefined,
-        };
-      },
-    });
-
-    $effect.pre(() => {
-      // When offset changes, rerun the query.
-      if (offset != lastQueryOffset) {
-        client.requestQuery();
-      }
-    });
-
-    return () => {
-      clientTotal.destroy();
-      client.destroy();
-    };
-  }
-
-  // Reset offset and create a new client when critical parts of the spec change
-  let clientsParams = $derived.by(
+  // Loader lifecycle: rebuild on params change, destroy on cleanup.
+  // deepMemo keeps the params object identity-stable across spec
+  // patches that don't materially change the loader's inputs.
+  let loaderParams = $derived.by(
     deepMemo(() => ({
       query: spec.query,
       columns: spec.columns,
-      columnStyles: columnStyles,
+      columnStyles,
       sort: spec.sort,
-      pageSize: pageSize,
+      windowSize,
     })),
   );
 
-  $effect.pre(() => {
-    resetOffset();
-    return createClients(clientsParams);
-  });
+  let loader = $state.raw<WindowLoader | undefined>(undefined);
 
-  // Reset offset when predicate changes
+  // Declared before the $effect.pre that references it. Svelte 5 fires
+  // $effect.pre eagerly during setup, and `let` bindings are in the
+  // temporal dead zone until their declaration line runs — putting this
+  // after the effect causes a "Cannot access before initialization"
+  // ReferenceError on the first run.
+  let didInitialScroll = false;
+
   $effect.pre(() => {
-    let callback = () => {
-      resetOffset();
-    };
-    context.filter.addEventListener("value", callback);
+    const p = loaderParams;
+    const newLoader = new WindowLoader({
+      coordinator: context.coordinator,
+      filter: context.filter,
+      table: context.table,
+      idColumn: context.id,
+      query: p.query,
+      columns: p.columns,
+      columnStyles: p.columnStyles,
+      sort: p.sort,
+      windowSize: p.windowSize,
+      onPrepared: ({ defaultColumnWidths: widths }) => {
+        defaultColumnWidths = widths;
+      },
+      onTotalCountChange: () => {
+        // Filter or schema change shifted the universe — back to top.
+        // The Table component reads loader.windowOffset and the
+        // virtualizer will scroll to the new beginning naturally.
+        untrack(() => {
+          newLoader.resetToTop();
+          (contentView as any)?.scrollToIndex?.(0, "start");
+        });
+      },
+    });
+    loader = newLoader;
+    // Params change (sort, columns, query, columnStyles, windowSize)
+    // resets the user to top: the underlying universe of rows has been
+    // re-sorted or re-filtered, so their old anchor is no longer
+    // meaningful. Mirrors the pre-rebuild behavior.
+    queueMicrotask(() => {
+      (contentView as any)?.scrollToIndex?.(0, "start");
+    });
+    didInitialScroll = false; // re-allow chartState.offset on next mount
     return () => {
-      context.filter.removeEventListener("value", callback);
+      newLoader.destroy();
     };
   });
 
-  // Calculate width based on content length
-  function widthForContent(content: any): number {
-    let characterLength = String(content).length;
-    return Math.min(600, Math.max(80, characterLength * 8 + 40));
-  }
-
-  const scrollParameters = {
-    behavior: "smooth",
-    block: "center",
-    container: "nearest",
-  } as const;
-
-  // Animate to a point. When the point is in the same page, scroll to the point;
-  // otherwise, go to the page with the point, and reveal the element directly.
-  async function animateToPoint(id: RowID) {
-    if (spec.query != null) {
-      // For custom queries we do not animate.
-      return;
-    }
-    if (data == null) {
-      return;
-    }
-
-    // Check if highlighted item is in current page
-    let isInCurrentPage = data.data.some((row) => row.__id__ === id);
-    if (isInCurrentPage) {
-      contentView?.getElementForId(id)?.scrollIntoView(scrollParameters);
-    } else {
-      let newOffset = await data?.offsetForId?.(id);
-      if (newOffset != undefined) {
-        // Make sure it's a multiple of page number.
-        newOffset = Math.floor(newOffset / pageSize) * pageSize;
-        scrollToOnLoadPage = { offset: newOffset, id: id };
-        onStateChange({ offset: newOffset });
-      }
-    }
-  }
-
-  let scrollToOnLoadPage = $state.raw<{ offset: number; id: RowID } | undefined>(undefined);
-
-  // Helper effect for animateToPoint, to show the new point when switching to a new page.
-  $effect(() => {
-    if (!scrollToOnLoadPage) {
-      return;
-    }
-    let scrollTo = scrollToOnLoadPage;
-    let currentData = data;
-    if (currentData?.offset == scrollTo.offset) {
-      scrollToOnLoadPage = undefined;
+  // Filter changes (cross-filter from another chart) reset to top too.
+  // Even when totalCount stays the same, the rows displayed may not be
+  // the same set — the user's row-5000 anchor is no longer the same
+  // record. Matches the matrix's "brush-select another chart → resets
+  // to top" expectation.
+  $effect.pre(() => {
+    const onFilterChange = () => {
       untrack(() => {
-        contentView?.getElementForId(scrollTo.id)?.scrollIntoView(scrollParameters);
+        loader?.resetToTop();
+        (contentView as any)?.scrollToIndex?.(0, "start");
       });
-    }
+    };
+    context.filter.addEventListener("value", onFilterChange);
+    return () => {
+      context.filter.removeEventListener("value", onFilterChange);
+    };
   });
 
-  function handlePageChange(page: number) {
-    onStateChange({ offset: page * pageSize });
-  }
+  // Initial offset from chartState.offset (D1: persists scroll-to-on-mount).
+  // Fires exactly once, when the loader has settled to a non-empty
+  // totalCount and the Table has mounted (so contentView is bound).
+  // Reading chartState.offset is intentionally NOT reactive past mount —
+  // we don't want every offset patch to re-jump the user.
+  $effect(() => {
+    if (didInitialScroll) return;
+    if (!loader || loader.totalCount === 0) return;
+    if (!contentView) return;
+    const idx = untrack(() => chartState.offset ?? 0);
+    if (idx > 0) {
+      (contentView as any).scrollToIndex?.(Math.min(idx, loader.totalCount - 1), "start");
+    }
+    didInitialScroll = true;
+  });
 
-  function handleLoadNext() {
-    onStateChange({ offset: Math.min(totalCount - 1, offset + pageSize) });
+  // Animate to a point. With virtualization the legacy "scroll if same
+  // page, otherwise jump to that page" branch collapses to a single
+  // path: ask the loader for the absolute index, scroll the
+  // virtualizer there, then wait for the row to render before final
+  // scrollIntoView.
+  async function animateToPoint(id: RowID) {
+    if (spec.query != null) return; // Custom-query mode: no reveal.
+    if (!loader) return;
+    const offset = await loader.offsetForId(id);
+    if (offset == null) return;
+    // ROW_NUMBER is 1-based; scrollToIndex is 0-based.
+    const targetIndex = Math.max(0, offset - 1);
+    (contentView as any)?.scrollToIndex?.(targetIndex, "center");
+    // Wait for the row to land in the DOM, then scroll it into precise view.
+    const el = await (contentView as any)?.getElementForId?.(id);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Persist the user's anchor so reloads land back here.
+    onStateChange({ offset: targetIndex });
   }
 
   function handleRowClick(rowId: RowID | null | undefined, event: MouseEvent) {
-    if (rowId == null) {
-      return;
-    }
+    if (rowId == null) return;
     isolatedHighlight.update((value) => {
       if (event.shiftKey || event.ctrlKey || event.metaKey) {
-        if (value == null) {
-          return [rowId];
-        }
-        if (value.indexOf(rowId) >= 0) {
-          return value.filter((x) => x != rowId);
-        } else {
-          return [...value, rowId];
-        }
-      } else {
-        if (value != null && value.length == 1 && value.indexOf(rowId) >= 0) {
-          return null;
-        } else {
-          return [rowId];
-        }
+        if (value == null) return [rowId];
+        if (value.indexOf(rowId) >= 0) return value.filter((x) => x !== rowId);
+        return [...value, rowId];
       }
+      if (value != null && value.length === 1 && value.indexOf(rowId) >= 0) return null;
+      return [rowId];
     });
   }
+
+  function handleRowDoubleClick(row: Record<string, any>) {
+    if (row == null) return;
+    detailRow = row;
+  }
+
+  // Seed columnState from localStorage once we know the column list.
+  // Subsequent loader rebuilds (sort change, filter change) reuse the
+  // already-seeded state so user toggles don't reset.
+  $effect(() => {
+    const cols = loader?.columns ?? [];
+    if (columnStateSeeded || cols.length === 0) return;
+    columnState = loadStoredColumnState(context.table, cols);
+    columnStateSeeded = true;
+  });
+
+  // Persist columnState whenever it changes. Debounced because a flurry
+  // of toggles (e.g. "uncheck 5 columns") would otherwise cause one
+  // localStorage write per click. Important: read `columnState` BEFORE
+  // any early-return so Svelte tracks it as a dep on the very first
+  // run of this effect — otherwise the seeded guard would short the
+  // body and the dep would never register.
+  $effect(() => {
+    const snapshot = columnState;
+    if (!columnStateSeeded) return;
+    if (columnStateSaveTimer != null) clearTimeout(columnStateSaveTimer);
+    columnStateSaveTimer = setTimeout(() => {
+      saveStoredColumnState(context.table, snapshot);
+      columnStateSaveTimer = null;
+    }, 100);
+  });
+
+  function handleToggleVisibility(column: string) {
+    const next = { ...columnState.visibility };
+    if (next[column] === false) delete next[column];
+    else next[column] = false;
+    columnState = { ...columnState, visibility: next };
+  }
+
+  function handleReorder(newOrder: string[]) {
+    columnState = { ...columnState, order: newOrder };
+  }
+
+  function handleTogglePinLeft(column: string) {
+    const left = columnState.pinning.left;
+    const next = left.includes(column) ? left.filter((c) => c !== column) : [...left, column];
+    columnState = { ...columnState, pinning: { left: next } };
+  }
+
+  // Per-column header filter state. Each column gets a stable source
+  // object (Mosaic Selection identifies clauses by source identity)
+  // held in this Map; reused on every popover open/close so the
+  // clause survives popover lifecycle. columnFilters is the active
+  // selection per column — empty array means no filter.
+  const filterSources = new Map<string, object>();
+  function sourceFor(column: string): object {
+    let s = filterSources.get(column);
+    if (!s) {
+      s = { __columnFilter: column };
+      filterSources.set(column, s);
+    }
+    return s;
+  }
+  let columnFilters = $state<Record<string, string[]>>({});
+  function handleColumnFilterChange(column: string, values: string[]) {
+    columnFilters = { ...columnFilters, [column]: values };
+  }
+
+  // Compute the rendered column order for the menu: stored order
+  // first (for any columns still in the schema), then any
+  // schema-but-not-stored columns appended. This gives the menu and
+  // the table a single source of truth for "where does each column
+  // appear right now."
+  let orderedColumns = $derived.by(() => {
+    const cols = loader?.columns;
+    if (!cols) return [];
+    const orderSet = new Set(columnState.order);
+    const fromOrder = columnState.order.filter((c) => cols.includes(c));
+    const remaining = cols.filter((c) => !orderSet.has(c));
+    return [...fromOrder, ...remaining];
+  });
+
+  // CSV export — currently-filtered rows only. Reuses the same
+  // exporter as the EmbeddingAtlas-level "Export selection" feature
+  // (see app/FileViewer.svelte:159). Predicate string comes from
+  // context.filter.predicate(null), which composes every active
+  // selection clause across all charts. Custom-spec.query mode
+  // (where predicate semantics differ) skips this — we hide the
+  // menu item below.
+  async function handleExportCsv() {
+    const predicate = predicateToString(context.filter.predicate(null) as any);
+    const [bytes, name] = await exportMosaicSelection(context.coordinator, context.table, predicate, "csv");
+    downloadBuffer(bytes, name);
+  }
+
+  // Per-chart settings group title shown in the settings drawer's
+  // tab strip. Kept short ("Table") so it fits the 64px tab — when
+  // multiple Instances charts coexist in a layout, distinguishing
+  // them in the strip would need a different UX (per-instance
+  // sub-tabs, or a chart picker), which we'll address when that
+  // case actually shows up.
+  let settingsTitle = "Table";
+
+  // Register a settings snippet with the page-level menu. The snippet
+  // itself is defined in the template below; it captures the column
+  // state + handlers via closure, so it stays in sync with this
+  // chart's state.
+  //
+  // `registerDelegate` is an inline arrow in `LayoutView.svelte` and so
+  // gets a fresh identity on every layout render. Reading it through
+  // `untrack` keeps this effect from re-firing (and clobbering the
+  // registration) when the prop's identity churns for unrelated
+  // reasons. We re-register only when the title changes — which is the
+  // only piece the menu reads back at iteration time.
+  $effect(() => {
+    void settingsTitle;
+    return untrack(() => {
+      if (!registerDelegate) return;
+      return registerDelegate({
+        settingsTitle,
+        settingsIcon: IconTable,
+        settingsContent: tableSettings,
+      });
+    });
+  });
 </script>
 
 <div
   class="w-full flex flex-col overflow-hidden rounded-md bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
   style:height={`${height ?? spec.defaultHeight ?? 500}px`}
 >
-  <div class="flex items-center justify-between px-2 py-0.5 border-b border-slate-200 dark:border-slate-700 gap-4">
-    <div class="flex items-center gap-4 flex-shrink-0">
-      <SegmentedControl
-        value={viewMode}
-        onChange={(v) => onSpecChange({ viewMode: v as "table" | "cards" })}
-        options={[
-          { value: "table", icon: IconTableView, title: "Table view" },
-          { value: "cards", icon: IconCardView, title: "Card view" },
-        ]}
-      />
-      <PaginatorControls currentPage={currentPage} pageCount={pageCount} onChange={handlePageChange} />
-      <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
-    </div>
+  <div class="flex items-center px-2 py-0.5 border-b border-slate-200 dark:border-slate-700 gap-4">
+    <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
   </div>
 
-  <div class="flex-1 min-h-0 overflow-auto" bind:this={viewContainer}>
-    {#if data != null}
-      {#if viewMode === "table"}
-        <Table
-          bind:this={contentView}
-          data={data.data}
-          columns={data.columns}
-          columnDescs={context.columns}
-          columnStyles={columnStyles}
-          defaultColumnWidths={defaultColumnWidths}
-          highlight={$highlight}
-          sort={spec.sort}
-          onRowClick={handleRowClick}
-          onSortChange={(value) => onSpecChange({ sort: value })}
-        />
-
-        {#if offset + pageSize < totalCount}
-          <div class="p-3 flex justify-center">
-            <button class="px-4 py-2 text-sm flex items-center gap-1" onclick={handleLoadNext}>
-              Next Page
-              <IconRight />
-            </button>
-          </div>
-        {/if}
-      {:else}
-        <Cards
-          bind:this={contentView}
-          data={data.data}
-          columns={data.columns}
-          columnStyles={columnStyles}
-          highlight={$highlight}
-          cardTemplate={spec.cardTemplate}
-          onRowClick={handleRowClick}
-        />
-
-        {#if offset + pageSize < totalCount}
-          <div class="p-3 flex justify-center">
-            <button class="px-4 py-2 text-sm flex items-center gap-1" onclick={handleLoadNext}>
-              Next Page
-              <IconRight />
-            </button>
-          </div>
-        {/if}
-      {/if}
+  <div class="flex-1 min-h-0 overflow-hidden">
+    {#if loader && loader.columns.length > 0}
+      <Table
+        bind:this={contentView}
+        loader={loader}
+        columnDescs={context.columns}
+        columnStyles={columnStyles}
+        defaultColumnWidths={defaultColumnWidths}
+        highlight={$highlight}
+        sort={spec.sort}
+        tableName={context.table}
+        bind:columnState={columnState}
+        filterContext={spec.query == null
+          ? {
+              coordinator: context.coordinator,
+              table: context.table,
+              filter: context.filter,
+              columnFilters,
+              sourceFor,
+              onChange: handleColumnFilterChange,
+            }
+          : undefined}
+        onRowClick={handleRowClick}
+        onRowDoubleClick={handleRowDoubleClick}
+        onSortChange={(value) => onSpecChange({ sort: value })}
+      />
     {:else}
       <div class="flex items-center justify-center h-full">
         <div class="text-slate-500 dark:text-slate-400">Loading...</div>
       </div>
     {/if}
   </div>
+
+  <DetailDrawer
+    row={detailRow}
+    columns={loader?.columns ?? []}
+    columnStyles={columnStyles}
+    onClose={() => (detailRow = null)}
+  />
 </div>
+
+{#snippet tableSettings()}
+  {#if loader && loader.columns.length > 0}
+    <ColumnControls
+      columns={orderedColumns}
+      visibility={columnState.visibility}
+      pinnedLeft={columnState.pinning.left}
+      onToggleVisibility={handleToggleVisibility}
+      onReorder={handleReorder}
+      onTogglePinLeft={handleTogglePinLeft}
+    />
+    {#if spec.query == null}
+      <ActionButton icon={IconDownload} label="Export CSV" class="w-48" onClick={handleExportCsv} />
+    {/if}
+  {/if}
+{/snippet}

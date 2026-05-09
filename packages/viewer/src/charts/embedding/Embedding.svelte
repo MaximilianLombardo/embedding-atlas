@@ -29,15 +29,18 @@
 
 <script lang="ts">
   import { EmbeddingViewMosaic } from "@embedding-atlas/component/svelte";
+  import { untrack } from "svelte";
   import { cubicOut } from "svelte/easing";
 
   import Button from "../../widgets/Button.svelte";
-  import PopupButton from "../../widgets/PopupButton.svelte";
+  import EmbeddingSearchBar from "../../widgets/EmbeddingSearchBar.svelte";
   import Select from "../../widgets/Select.svelte";
   import Slider from "../../widgets/Slider.svelte";
   import Legend from "./Legend.svelte";
 
-  import { IconSettings } from "../../assets/icons.js";
+  import { IconEmbeddingView } from "../../assets/icons.js";
+  import { writable } from "svelte/store";
+
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
   import { resolveChartTheme } from "../common/theme.js";
@@ -58,6 +61,7 @@
     state: chartState,
     onStateChange,
     onSpecChange,
+    registerDelegate,
   }: ChartViewProps<EmbeddingSpec, EmbeddingState> = $props();
 
   // svelte-ignore state_referenced_locally
@@ -203,6 +207,51 @@
     }
     currentViewportAnimation = requestAnimationFrame(callback);
   }
+
+  // Search bar plumbing: the host (EmbeddingAtlas.svelte) wires its
+  // search state into `chartContext` as Writable stores. The bar
+  // renders only when *all* of those are present (otherwise the
+  // chart was constructed in a context without atlas-level search
+  // — e.g. as an embedded component — and the bar should be
+  // invisible). Local fallback stores keep the `$store` template
+  // syntax happy when the host hasn't wired them.
+  // svelte-ignore state_referenced_locally
+  let searchQueryStore = $derived(context.searchQuery ?? writable(""));
+  // svelte-ignore state_referenced_locally
+  let searchFilterEnabledStore = $derived(context.searchFilterEnabled ?? writable(false));
+  // svelte-ignore state_referenced_locally
+  let searchResultVisibleStore = $derived(context.searchResultVisible ?? writable(false));
+  // svelte-ignore state_referenced_locally
+  let searcherStatusStore = $derived(context.searcherStatus ?? writable(""));
+  let hasSearch = $derived(
+    context.searchQuery != null &&
+      context.searchMode != null &&
+      context.searchResultVisible != null &&
+      context.searchFilterEnabled != null &&
+      context.searcherStatus != null,
+  );
+
+  // Register an "Embedding" tab in the page-level settings drawer.
+  // The snippet content is defined below; it captures spec /
+  // categoryColumn / categoryLegend etc. via closure and stays in
+  // sync as the user adjusts settings. Mirror Instances.svelte's
+  // pattern — `untrack` insulates the registration from
+  // prop-identity churn (LayoutView's chartView snippet creates a
+  // fresh `registerDelegate` arrow each frame during layout
+  // transitions; we don't want to thrash the registration).
+  $effect(() => {
+    return untrack(() => {
+      if (!registerDelegate) return;
+      return registerDelegate({
+        // Short label — the drawer's tab strip is 64 px wide, and
+        // "Embedding" overflows even at 10px. "Embed" plus the
+        // scatter-plot icon is enough to identify the tab.
+        settingsTitle: "Embed",
+        settingsIcon: IconEmbeddingView,
+        settingsContent: embeddingSettings,
+      });
+    });
+  });
 </script>
 
 <div class="relative">
@@ -276,12 +325,45 @@
         />
       </div>
     {/if}
-    <div
-      class="flex-none p-2 rounded-ss-md rounded-ee-md bg-white/75 dark:bg-black/75 backdrop-blur-sm flex items-center gap-2 pointer-events-auto order-1"
-    >
+    <!-- The in-pane Color picker + Settings popup that previously
+         lived here have been moved into the Embedding tab of the
+         page-level settings panel (see EmbeddingAtlas.svelte's
+         SettingsPanel). The panel is the single home for all
+         chart-scoped settings; the embedding canvas no longer
+         displays controls overlaid on the data. -->
+  </div>
+  <!-- Search bar: glass-translucent input + dropdown anchored to
+       the embedding canvas's top-left corner. State (query / mode /
+       filter-toggle / result store / status) lives in
+       EmbeddingAtlas.svelte and travels through `chartContext` as
+       Writable / Readable stores. The search bar only renders if
+       the host has wired the stores — otherwise the chart is being
+       used in a context (e.g. an embed) without atlas-level search
+       and the bar should be invisible. -->
+  {#if hasSearch}
+    <EmbeddingSearchBar
+      searchQuery={$searchQueryStore}
+      onSearchQueryChange={(v) => context.searchQuery!.set(v)}
+      searchFilterEnabled={$searchFilterEnabledStore}
+      onSearchFilterEnabledChange={(v) => context.searchFilterEnabled!.set(v)}
+      searchResult={context.searchResult as any}
+      searcherStatus={$searcherStatusStore}
+      visible={$searchResultVisibleStore}
+      onResultClick={(item) => context.highlight.set(item.id)}
+      onClear={() => {
+        context.searchQuery!.set("");
+        context.searchResultVisible!.set(false);
+      }}
+    />
+  {/if}
+</div>
+
+{#snippet embeddingSettings()}
+  <div class="flex flex-col gap-3">
+    <div>
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">COLOR</div>
       <Select
-        class="max-w-64"
-        label="Color"
+        class="w-full"
         value={categoryColumn}
         onChange={(v) => onSpecChange({ data: { ...spec.data, category: v } })}
         options={[
@@ -291,74 +373,81 @@
             .map((c) => ({ value: c.name, label: `${c.name} (${c.type})` })),
         ]}
       />
-      <PopupButton icon={IconSettings} title="Options">
-        <div class="flex flex-col gap-2 w-64">
-          <div class="text-slate-500 dark:text-slate-400 select-none">Display Mode</div>
-          <div class="flex gap-2 items-center">
-            <Select
-              value={spec.mode ?? "points"}
-              onChange={(v) => onSpecChange({ mode: v })}
-              disabled={categoryLegend != null && categoryLegend.legend.length > maxCategories}
-              options={[
-                { value: "points", label: "Points" },
-                { value: "density", label: "Density" },
-              ]}
-            />
-            {#if (spec.mode ?? "points") == "density"}
-              <Slider
-                bind:value={
-                  () => Math.log((spec.minimumDensity ?? defaultMinimumDensity) / defaultMinimumDensity),
-                  (v) => onSpecChange({ minimumDensity: defaultMinimumDensity * Math.exp(v) })
-                }
-                min={-4}
-                max={4}
-                step={0.05}
-              />
-            {/if}
-          </div>
-          <div class="text-slate-500 dark:text-slate-400 select-none">Point Size</div>
-          <div class="flex gap-2 items-center">
-            <Slider
-              bind:value={() => spec.pointSize ?? 1, (v) => onSpecChange({ pointSize: v })}
-              min={1}
-              max={10}
-              step={0.05}
-            />
-            <Button label="Auto" onClick={() => onSpecChange({ pointSize: undefined })} />
-          </div>
-          {#if totalPointCount != null && totalPointCount > minDownsampleMaxPoints}
-            {@const effectiveLimit = spec.downsampleMaxPoints ?? Math.min(defaultDownsampleMaxPoints, totalPointCount)}
-            {@const isMaxed = effectiveLimit >= totalPointCount}
-            <div class="text-slate-500 dark:text-slate-400 select-none">
-              Max Points: {isMaxed
-                ? "All"
-                : effectiveLimit >= 1000000
-                  ? (effectiveLimit / 1000000).toFixed(1) + "M"
-                  : (effectiveLimit / 1000).toFixed(0) + "K"}
-              {#if !isMaxed}
-                <span class="text-slate-400 dark:text-slate-500"
-                  >/ {totalPointCount >= 1000000
-                    ? (totalPointCount / 1000000).toFixed(1) + "M"
-                    : (totalPointCount / 1000).toFixed(0) + "K"}</span
-                >
-              {/if}
-            </div>
-            <div class="flex gap-2 items-center">
-              <Slider
-                bind:value={
-                  () =>
-                    spec.downsampleMaxPoints ??
-                    Math.min(defaultDownsampleMaxPoints, totalPointCount ?? defaultDownsampleMaxPoints),
-                  (v) => onSpecChange({ downsampleMaxPoints: v })
-                }
-                min={minDownsampleMaxPoints}
-                max={totalPointCount}
-                step={Math.max(10000, Math.floor(totalPointCount / 100 / 10000) * 10000)}
-              />
-            </div>
-          {/if}
-        </div>
-      </PopupButton>
     </div>
+    <div>
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+        DISPLAY MODE
+      </div>
+      <div class="flex gap-2 items-center">
+        <Select
+          value={spec.mode ?? "points"}
+          onChange={(v) => onSpecChange({ mode: v })}
+          disabled={categoryLegend != null && categoryLegend.legend.length > maxCategories}
+          options={[
+            { value: "points", label: "Points" },
+            { value: "density", label: "Density" },
+          ]}
+        />
+        {#if (spec.mode ?? "points") == "density"}
+          <Slider
+            bind:value={
+              () => Math.log((spec.minimumDensity ?? defaultMinimumDensity) / defaultMinimumDensity),
+              (v) => onSpecChange({ minimumDensity: defaultMinimumDensity * Math.exp(v) })
+            }
+            min={-4}
+            max={4}
+            step={0.05}
+          />
+        {/if}
+      </div>
+    </div>
+    <div>
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+        POINT SIZE
+      </div>
+      <div class="flex gap-2 items-center">
+        <Slider
+          bind:value={() => spec.pointSize ?? 1, (v) => onSpecChange({ pointSize: v })}
+          min={1}
+          max={10}
+          step={0.05}
+        />
+        <Button label="Auto" onClick={() => onSpecChange({ pointSize: undefined })} />
+      </div>
+    </div>
+    {#if totalPointCount != null && totalPointCount > minDownsampleMaxPoints}
+      {@const effectiveLimit = spec.downsampleMaxPoints ?? Math.min(defaultDownsampleMaxPoints, totalPointCount)}
+      {@const isMaxed = effectiveLimit >= totalPointCount}
+      <div>
+        <div
+          class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide flex justify-between"
+        >
+          <span>MAX POINTS</span>
+          <span class="font-normal normal-case tracking-normal text-slate-400 dark:text-slate-500">
+            {isMaxed
+              ? "All"
+              : effectiveLimit >= 1000000
+                ? (effectiveLimit / 1000000).toFixed(1) + "M"
+                : (effectiveLimit / 1000).toFixed(0) + "K"}
+            {#if !isMaxed}
+              / {totalPointCount >= 1000000
+                ? (totalPointCount / 1000000).toFixed(1) + "M"
+                : (totalPointCount / 1000).toFixed(0) + "K"}
+            {/if}
+          </span>
+        </div>
+        <Slider
+          bind:value={
+            () =>
+              spec.downsampleMaxPoints ??
+              Math.min(defaultDownsampleMaxPoints, totalPointCount ?? defaultDownsampleMaxPoints),
+            (v) => onSpecChange({ downsampleMaxPoints: v })
+          }
+          min={minDownsampleMaxPoints}
+          max={totalPointCount}
+          step={Math.max(10000, Math.floor(totalPointCount / 100 / 10000) * 10000)}
+        />
+      </div>
+    {/if}
   </div>
-</div>
+{/snippet}

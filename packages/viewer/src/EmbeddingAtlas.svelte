@@ -2,34 +2,35 @@
 <script lang="ts">
   import { debounce } from "@embedding-atlas/utils";
   import { Selection } from "@uwdata/mosaic-core";
+  import * as SQL from "@uwdata/mosaic-sql";
   import { onMount, setContext } from "svelte";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { writable } from "svelte/store";
-  import { scale } from "svelte/transition";
 
-  import LayoutOptionsView from "./layouts/LayoutOptionsView.svelte";
   import LayoutView from "./layouts/LayoutView.svelte";
+  import Resizer from "./layouts/list/Resizer.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
-  import SearchResultList from "./views/SearchResultList.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
-  import Button from "./widgets/Button.svelte";
+  import AtlasIconStrip from "./widgets/AtlasIconStrip.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
-  import Input from "./widgets/Input.svelte";
-  import PopupButton from "./widgets/PopupButton.svelte";
-  import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
-  import Spinner from "./widgets/Spinner.svelte";
+  import SettingsPanel from "./widgets/SettingsPanel.svelte";
+  import Slider from "./widgets/Slider.svelte";
 
   import {
     IconBraces,
-    IconClose,
     IconDarkMode,
     IconDashboardLayout,
     IconDownload,
+    IconEmbeddingView,
     IconExport,
     IconLightMode,
     IconListLayout,
+    IconMenu,
+    IconSearch,
     IconSettings,
+    IconTable,
   } from "./assets/icons.js";
 
   import type { EmbeddingAtlasProps, EmbeddingAtlasState } from "./api.js";
@@ -48,7 +49,13 @@
   import { columnDescriptions, distinctCounts, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
 
-  const searchLimit = 500;
+  // Maximum number of results the searcher returns. Reactive so the
+  // user can tune it from the Search settings tab in the drawer; the
+  // searcher's `limit` is read at query-time. Persisted to
+  // localStorage so the choice survives reloads.
+  const SEARCH_LIMIT_KEY = "embedding-atlas:search-limit";
+  const SEARCH_LIMIT_DEFAULT = 500;
+  let searchLimit = $state(SEARCH_LIMIT_DEFAULT);
 
   let {
     coordinator,
@@ -138,11 +145,19 @@
     neighbors: { value: "neighbors", label: "Neighbors" },
   };
 
-  let searchMode = $state<"full-text" | "vector">("full-text");
-
-  let searchQuery = $state("");
-  let searcherStatus = $state("");
-  let searchResultVisible = $state(false);
+  // Search state lives in writable stores rather than `$state` so it
+  // can be passed through `chartContext` to the EmbeddingSearchBar
+  // (which is mounted inside `Embedding.svelte`, on the other side
+  // of LayoutView). Stores are the canonical Svelte way to share
+  // mutable state across component boundaries.
+  let searchModeStore = writable<"full-text" | "vector">("full-text");
+  let searchQueryStore = writable("");
+  let searcherStatusStore = writable("");
+  let searchResultVisibleStore = writable(false);
+  // New: filter-table-to-results toggle. Persisted to localStorage so
+  // the user's preference within the dataset survives reloads.
+  const SEARCH_FILTER_KEY = "embedding-atlas:search-filter";
+  let searchFilterEnabledStore = writable(false);
   let searchResultStore = writable<{
     query: any;
     mode: string;
@@ -154,7 +169,7 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
-      searchResultVisible = true;
+      searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
       let searcherResult = await performSearch({
@@ -164,7 +179,7 @@
         mode: mode,
         limit: searchLimit,
         onStatus: (status) => {
-          searcherStatus = status;
+          searcherStatusStore.set(status);
         },
       });
 
@@ -187,7 +202,7 @@
         highlight = "";
       }
 
-      searcherStatus = "";
+      searcherStatusStore.set("");
 
       return {
         query: query,
@@ -207,14 +222,55 @@
 
   function clearSearch() {
     searchResultStore.set(null);
-    searchResultVisible = false;
+    searchResultVisibleStore.set(false);
   }
 
   $effect.pre(() => {
-    if (searchQuery == "") {
+    if ($searchQueryStore == "") {
       clearSearch();
     } else {
-      debouncedSearch(searchQuery, searchMode);
+      debouncedSearch($searchQueryStore, $searchModeStore);
+    }
+  });
+
+  // Search-as-crossfilter publication. When the user opts into
+  // filtering via the search bar's funnel toggle AND there's a
+  // non-empty query AND the searcher has returned at least one
+  // result, publish a `column IN (ids)` predicate to the global
+  // cross-filter under a stable per-search source identity. The
+  // predicates panel automatically displays this clause as a chip
+  // (just like header filters appear there); clearing the chip
+  // independently clears the filter.
+  //
+  // Source identity pattern mirrors HeaderFilterPopover.svelte —
+  // a stable object so subsequent updates with the same source
+  // replace the existing clause; updating with a `null` predicate
+  // releases it.
+  const searchFilterSource = { __searchFilter: true } as const;
+  $effect(() => {
+    const enabled = $searchFilterEnabledStore;
+    const query = $searchQueryStore;
+    const result = $searchResultStore;
+    const ids = result?.ids ?? [];
+    const shouldFilter = enabled && query !== "" && ids.length > 0;
+    if (shouldFilter) {
+      const predicate = SQL.isIn(
+        SQL.column(data.id),
+        ids.map((id) => SQL.literal(id) as any),
+      );
+      crossFilter.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: predicate as any,
+        value: query,
+      });
+    } else {
+      crossFilter.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: null,
+        value: null,
+      });
     }
   });
 
@@ -361,6 +417,11 @@
     searchModes: searchModes,
     search: doSearch,
     searchResult: searchResultStore,
+    searchQuery: searchQueryStore,
+    searchMode: searchModeStore,
+    searchResultVisible: searchResultVisibleStore,
+    searchFilterEnabled: searchFilterEnabledStore,
+    searcherStatus: searcherStatusStore,
     highlight: writable(null),
     embeddingViewConfig: embeddingViewConfig,
     embeddingViewLabels: embeddingViewLabels,
@@ -412,17 +473,268 @@
     }),
   );
 
-  let chartDelegates = new Map<string, Set<ChartDelegate>>();
+  // SvelteMap so add/delete on the inner Sets propagates reactivity
+  // to `chartSettingsGroups` below. The outer type is still a plain
+  // Map<…> since `provideModelContext` consumes it that way (SvelteMap
+  // extends Map, so the contract is preserved for the model-context
+  // path which doesn't need reactivity).
+  let chartDelegates = new SvelteMap<string, Set<ChartDelegate>>();
 
   function registerChartDelegate(id: string, delegate: ChartDelegate): () => void {
-    if (!chartDelegates.has(id)) {
-      chartDelegates.set(id, new Set());
+    let set = chartDelegates.get(id);
+    if (!set) {
+      // Wrap the inner Set in a SvelteSet so Set.add/delete notifies
+      // readers of `chartSettingsGroups`. Without this the derived
+      // would only re-run when the outer Map changes (i.e. on first
+      // delegate per id), missing later registrations on the same id.
+      set = new SvelteSet<ChartDelegate>();
+      chartDelegates.set(id, set);
     }
-    chartDelegates.get(id)!.add(delegate);
+    set.add(delegate);
     return () => {
       chartDelegates.get(id)?.delete(delegate);
     };
   }
+
+  // Snippets contributed by charts to the settings drawer. Iteration
+  // order follows chart insertion order in `chartDelegates`, which
+  // mirrors layout order. `key` is the chart id (stable per chart),
+  // suitable for a persistent active-tab token in localStorage.
+  let chartSettingsGroups = $derived.by(() => {
+    const groups: {
+      key: string;
+      title: string;
+      icon?: import("svelte").Component<{ class?: string }>;
+      content: import("svelte").Snippet;
+    }[] = [];
+    for (const [id, set] of chartDelegates) {
+      for (const d of set) {
+        if (d.settingsContent) {
+          groups.push({
+            key: id,
+            title: d.settingsTitle ?? "Settings",
+            icon: d.settingsIcon,
+            content: d.settingsContent,
+          });
+          break; // One settings tab per chart id; first delegate wins.
+        }
+      }
+    }
+    return groups;
+  });
+
+  // Settings panel open/closed (UI-only, not persisted across
+  // reloads — a user closes it when they're done) plus active tab
+  // key (persisted so power users land on their preferred tab on
+  // next load). The variable name is `drawerOpen` for now to keep
+  // the diff small; P2.5 may rename it to align with `showSettings`
+  // in `ListLayoutState`.
+  let drawerOpen = $state(false);
+  // Width of the inline settings panel when open. Animated between
+  // 0 (closed) and this value (open) by SettingsPanel itself; the
+  // resizer between the panel and the main content drives drag
+  // resize. Persisted to localStorage so the user's chosen width
+  // survives reloads (mirrors the searchLimit / activeSettingsKey
+  // hydration pattern below). Range 240–720 px; values outside this
+  // band on read are ignored and the default kicks in instead.
+  const SETTINGS_PANEL_WIDTH_KEY = "embedding-atlas:settings-panel-width";
+  const SETTINGS_PANEL_WIDTH_DEFAULT = 360;
+  const SETTINGS_PANEL_WIDTH_MIN = 240;
+  const SETTINGS_PANEL_WIDTH_MAX = 720;
+  let settingsPanelWidth = $state(SETTINGS_PANEL_WIDTH_DEFAULT);
+  // Container width for the horizontal flex root, bound via
+  // `bind:clientWidth`. Used to clamp the resizer's max value so
+  // the panel can't squeeze the main content below ~200px.
+  let containerWidth = $state(800);
+  const ACTIVE_TAB_KEY = "embedding-atlas:settings-tab";
+  let activeSettingsKey = $state<string>("global");
+  // Hydrate from localStorage on mount; written back on change.
+  $effect(() => {
+    try {
+      const v = localStorage.getItem(ACTIVE_TAB_KEY);
+      if (v) activeSettingsKey = v;
+    } catch {
+      // ignore (e.g. SSR or storage disabled)
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(ACTIVE_TAB_KEY, activeSettingsKey);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Hydrate searchLimit from localStorage on mount; written back on change.
+  $effect(() => {
+    try {
+      const v = localStorage.getItem(SEARCH_LIMIT_KEY);
+      if (v != null) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= 50 && n <= 2000) searchLimit = n;
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(SEARCH_LIMIT_KEY, String(searchLimit));
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Hydrate settingsPanelWidth from localStorage on mount; written back on change.
+  $effect(() => {
+    try {
+      const v = localStorage.getItem(SETTINGS_PANEL_WIDTH_KEY);
+      if (v != null) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= SETTINGS_PANEL_WIDTH_MIN && n <= SETTINGS_PANEL_WIDTH_MAX) {
+          settingsPanelWidth = n;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+  $effect(() => {
+    try {
+      localStorage.setItem(SETTINGS_PANEL_WIDTH_KEY, String(settingsPanelWidth));
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Hydrate searchFilterEnabled from localStorage; subscribe to write back.
+  try {
+    const v = localStorage.getItem(SEARCH_FILTER_KEY);
+    if (v != null) searchFilterEnabledStore.set(v === "true");
+  } catch {
+    /* ignore */
+  }
+  searchFilterEnabledStore.subscribe((v) => {
+    try {
+      localStorage.setItem(SEARCH_FILTER_KEY, v ? "true" : "false");
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Toggle a boolean field on the active layout's state. Used by
+  // the icon strip's middle section to flip showEmbedding /
+  // showTable / showCharts visibility — a single-call helper
+  // because we feed plain `{ icon, onClick }` button specs to
+  // AtlasIconStrip rather than rendering bindable ToggleButtons
+  // inline.
+  function toggleLayoutField(field: string, defaultValue: boolean) {
+    const current = ((layoutStates[layout] ?? {}) as Record<string, any>)[field] ?? defaultValue;
+    layoutStates = {
+      ...layoutStates,
+      [layout]: { ...(layoutStates[layout] ?? {}), [field]: !current },
+    };
+  }
+
+  // Sections fed to AtlasIconStrip. The strip is presentational —
+  // it has no atlas-state knowledge of its own — so we derive the
+  // full button list (icons + active states + handlers) here and
+  // hand it to the strip. See widgets/AtlasIconStrip.svelte.
+  //
+  // Top section (layout): list / dashboard.
+  // Middle section (show/hide, list-layout only): embedding /
+  //   table / charts. Hidden for the dashboard layout because
+  //   those toggles are list-specific.
+  // Bottom section (atlas-level): theme toggle (only when the host
+  //   doesn't hard-code a color scheme via `colorScheme` prop) +
+  //   settings gear. The bottom section is pinned to the floor by
+  //   AtlasIconStrip's mt-auto rule.
+  let stripSections = $derived.by(() => {
+    const listState = (layoutStates[layout] ?? {}) as Record<string, any>;
+    const showEmbedding = (listState.showEmbedding ?? true) as boolean;
+    const showTable = (listState.showTable ?? true) as boolean;
+    const showCharts = (listState.showCharts ?? true) as boolean;
+
+    const sections: {
+      key: string;
+      buttons: {
+        icon: import("svelte").Component<{ class?: string }>;
+        title: string;
+        active?: boolean;
+        onClick: () => void;
+      }[];
+    }[] = [
+      {
+        key: "layout",
+        buttons: [
+          {
+            icon: IconListLayout,
+            title: "List layout",
+            active: layout === "list",
+            onClick: () => (layout = "list"),
+          },
+          {
+            icon: IconDashboardLayout,
+            title: "Dashboard layout",
+            active: layout === "dashboard",
+            onClick: () => (layout = "dashboard"),
+          },
+        ],
+      },
+    ];
+
+    if (layout === "list") {
+      sections.push({
+        key: "show-hide",
+        buttons: [
+          {
+            icon: IconEmbeddingView,
+            title: "Show / hide embedding",
+            active: showEmbedding,
+            onClick: () => toggleLayoutField("showEmbedding", true),
+          },
+          {
+            icon: IconTable,
+            title: "Show / hide table",
+            active: showTable,
+            onClick: () => toggleLayoutField("showTable", true),
+          },
+          {
+            icon: IconMenu,
+            title: "Show / hide charts",
+            active: showCharts,
+            onClick: () => toggleLayoutField("showCharts", true),
+          },
+        ],
+      });
+    }
+
+    const atlasButtons: {
+      icon: import("svelte").Component<{ class?: string }>;
+      title: string;
+      active?: boolean;
+      onClick: () => void;
+    }[] = [];
+    if (colorSchemeProp == null) {
+      atlasButtons.push({
+        icon: $colorScheme === "dark" ? IconLightMode : IconDarkMode,
+        title: "Toggle light / dark mode",
+        active: false,
+        onClick: () => {
+          $userColorScheme = $colorScheme === "light" ? "dark" : "light";
+        },
+      });
+    }
+    atlasButtons.push({
+      icon: IconSettings,
+      title: "Settings",
+      active: drawerOpen,
+      onClick: () => (drawerOpen = !drawerOpen),
+    });
+    sections.push({ key: "atlas", buttons: atlasButtons });
+
+    return sections;
+  });
 
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
@@ -485,219 +797,74 @@
   }
 </script>
 
-<div class="embedding-atlas-root" style:width="100%" style:height="100%" bind:this={container}>
+<div
+  class="embedding-atlas-root"
+  class:dark={$colorScheme == "dark"}
+  style:width="100%"
+  style:height="100%"
+  style:position="relative"
+  style:color-scheme={$colorScheme}
+  bind:this={container}
+>
+  <!-- Horizontal flex root: icon strip + (optionally) settings
+       panel + resizer + main content column. The strip absorbs
+       all the controls that previously lived in the top toolbar
+       (layout selector, show/hide toggles, theme, settings gear);
+       there is no top toolbar anymore. -->
   <div
-    class="w-full h-full flex flex-col text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
-    class:dark={$colorScheme == "dark"}
-    style:color-scheme={$colorScheme}
+    class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
+    bind:clientWidth={containerWidth}
   >
-    <!-- Toolbar -->
-    <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
-      {#if initialized}
-        <!-- Left side -->
-        <div class="flex flex-row flex-1 justify-between min-w-[180px]">
-          {#if searchMode.length > 0}
-            <div class="relative w-full">
-              <Input type="search" placeholder="Search..." className="w-full max-w-[400px] " bind:value={searchQuery} />
-              {#if searchModes.filter((x) => x != "neighbors").length > 1}
-                <Select
-                  options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
-                  value={searchMode}
-                  onChange={(v) => (searchMode = v)}
-                />
-              {/if}
+    <AtlasIconStrip sections={stripSections} />
 
-              {#if searchResultVisible}
-                <div
-                  class="absolute w-96 left-0 top-[32px] rounded-md right-0 z-20 border border-slate-300 dark:border-slate-600 overflow-hidden resize shadow-lg bg-white/75 dark:bg-slate-800/75 backdrop-blur-sm"
-                  style:height="48em"
-                >
-                  {#if $searchResultStore != null}
-                    {@const searchResult = $searchResultStore}
-                    {#key searchResult}
-                      <SearchResultList
-                        items={searchResult.items}
-                        label={searchResult.label}
-                        highlight={searchResult.highlight}
-                        limit={searchLimit}
-                        onClick={async (item) => {
-                          chartContext.highlight.set(item.id);
-                        }}
-                        onClose={clearSearch}
-                        columnStyles={$resolvedColumnStyles}
-                      />
-                    {/key}
-                  {:else if searcherStatus != null}
-                    <div class="p-2">
-                      <Spinner status={searcherStatus} />
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {:else}
-            <div class="text-slate-500 dark:text-slate-400">Embedding Atlas</div>
-          {/if}
-        </div>
-        <!-- Right side -->
-        <div
-          class="flex flex-none gap-2 items-center pl-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"
-        >
-          <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
-          <div class="flex flex-row items-center">
-            <button
-              title="Clear filters"
-              onclick={resetFilter}
-              class="rounded-md flex select-none items-center p-1.5 text-slate-400 dark:text-slate-500 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-            >
-              <IconClose class="w-5 h-5" />
-            </button>
+    <!-- Inline settings panel. Width animates between 0 (closed)
+         and `settingsPanelWidth` (open). Stays mounted across
+         open/close so the contributed snippets keep their state
+         (the same reason the chart-snippet pattern is preserved). -->
+    <SettingsPanel
+      width={drawerOpen ? settingsPanelWidth : 0}
+      onClose={() => (drawerOpen = false)}
+      globalContent={globalSettings}
+      pageGroups={[{ key: "search", title: "Search", icon: IconSearch, content: searchSettings }]}
+      chartGroups={chartSettingsGroups}
+      activeKey={activeSettingsKey}
+      onActiveKeyChange={(k) => (activeSettingsKey = k)}
+      mcpStatus={mcpStatus}
+      version={EMBEDDING_ATLAS_VERSION}
+    />
+    {#if drawerOpen}
+      <Resizer
+        class="w-1 flex-none bg-slate-300 dark:bg-slate-600 hover:bg-blue-500 dark:hover:bg-blue-400 transition-colors"
+        axis="x"
+        scaler={1}
+        min={SETTINGS_PANEL_WIDTH_MIN}
+        max={Math.min(SETTINGS_PANEL_WIDTH_MAX, Math.max(SETTINGS_PANEL_WIDTH_MIN, containerWidth - 200))}
+        value={settingsPanelWidth}
+        onChange={(v) => (settingsPanelWidth = v)}
+      />
+    {/if}
 
-            {#if onExportSelection}
-              <PopupButton title="Export Selection">
-                {#snippet button({ visible, toggle })}
-                  <button
-                    title="Export Selection"
-                    onclick={toggle}
-                    class="rounded-md px-1.5 py-1.5 flex select-none items-center focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-                    class:text-slate-400={!visible}
-                    class:dark:text-slate-500={!visible}
-                  >
-                    <IconExport class="w-5 h-5" />
-                  </button>
-                {/snippet}
-                <div class="min-w-[420px] flex flex-col gap-2">
-                  <div class="flex flex-row gap-2">
-                    <ActionButton
-                      icon={IconExport}
-                      label="Export Selection"
-                      title="Export the selected points"
-                      class="w-48"
-                      onClick={() => onExportSelection(currentPredicate(), exportFormat)}
-                    />
-                    <Select
-                      label="Format"
-                      value={exportFormat}
-                      onChange={(v) => (exportFormat = v)}
-                      options={[
-                        { value: "parquet", label: "Parquet" },
-                        { value: "jsonl", label: "JSONL" },
-                        { value: "json", label: "JSON" },
-                        { value: "csv", label: "CSV" },
-                      ]}
-                    />
-                  </div>
-                </div>
-              </PopupButton>
-            {/if}
-          </div>
-        </div>
-        <div class="flex flex-none flex-row gap-2">
-          <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
-            {#key layout}
-              <div transition:scale class="col-start-1 row-start-1">
-                <LayoutOptionsView
-                  context={chartContext}
-                  charts={charts}
-                  chartStates={chartStates}
-                  layout={layout}
-                  layoutStates={layoutStates}
-                  onChartsChange={(v) => (charts = v)}
-                  onChartStatesChange={(v) => (chartStates = v)}
-                  onLayoutStatesChange={(v) => (layoutStates = v)}
-                />
-              </div>
-            {/key}
-          </div>
-          <SegmentedControl
-            value={layout}
-            onChange={(v) => (layout = v)}
-            options={[
-              { value: "list", icon: IconListLayout, title: "List layout" },
-              { value: "dashboard", icon: IconDashboardLayout, title: "Dashboard layout" },
-            ]}
+    <!-- Main column: just content. min-w-0 so the column can
+         shrink when the settings panel grows; without it children
+         that ignore flex shrink (e.g. wide tables, fixed-width
+         Mosaic clients) would refuse to compress and push the
+         layout out past the container. -->
+    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div class="flex-1 overflow-hidden h-full m-2">
+        {#if initialized}
+          <LayoutView
+            context={chartContext}
+            layout={layout}
+            layoutStates={layoutStates}
+            charts={charts}
+            chartStates={chartStates}
+            onChartsChange={(v) => (charts = v)}
+            onChartStatesChange={(v) => (chartStates = v)}
+            onLayoutStatesChange={(v) => (layoutStates = v)}
+            registerChartDelegate={registerChartDelegate}
           />
-          {#if colorSchemeProp == null}
-            <Button
-              icon={$colorScheme == "dark" ? IconLightMode : IconDarkMode}
-              title="Toggle light / dark mode"
-              onClick={() => {
-                $userColorScheme = $colorScheme == "light" ? "dark" : "light";
-              }}
-            />
-          {/if}
-          <PopupButton icon={IconSettings} title="Options">
-            <div class="min-w-[420px] flex flex-col gap-2">
-              <!-- Text style settings -->
-              {#if columns.length > 0}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
-                <ColumnStylePicker
-                  columns={columns}
-                  styles={$resolvedColumnStyles}
-                  onStylesChange={(value) => {
-                    columnStyles = value;
-                  }}
-                />
-              {/if}
-              <!-- Export -->
-              <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
-              <div class="flex flex-col gap-2">
-                <ActionButton
-                  icon={IconBraces}
-                  label="Copy State"
-                  title="Copy the current Embedding Atlas state as JSON to clipboard."
-                  class="w-48"
-                  onClick={onCopyState}
-                />
-              </div>
-              {#if onExportApplication}
-                <div class="flex flex-col gap-2">
-                  <ActionButton
-                    icon={IconDownload}
-                    label="Export Application"
-                    title="Download a self-contained static web application"
-                    class="w-48"
-                    onClick={onExportApplication}
-                  />
-                </div>
-              {/if}
-              {#if mcpStatus}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">MCP (Model Context Protocol)</h4>
-                <div class="flex flex-none gap-2 select-none items-center">
-                  {#if mcpStatus == "connecting"}
-                    <div class="w-3 h-3 rounded-full bg-orange-500 animate-pulse"></div>
-                    Connecting...
-                  {:else if mcpStatus == "connected"}
-                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                    Connected
-                  {:else if mcpStatus == "closed" || mcpStatus == "error"}
-                    <div class="w-3 h-3 rounded-full bg-red-500"></div>
-                    Error or server closed connection
-                  {/if}
-                </div>
-              {/if}
-              <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
-              <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
-            </div>
-          </PopupButton>
-        </div>
-      {/if}
-    </div>
-    <!-- Main Content -->
-    <div class="flex-1 overflow-hidden h-full ml-2 mr-2 mb-2">
-      {#if initialized}
-        <LayoutView
-          context={chartContext}
-          layout={layout}
-          layoutStates={layoutStates}
-          charts={charts}
-          chartStates={chartStates}
-          onChartsChange={(v) => (charts = v)}
-          onChartStatesChange={(v) => (chartStates = v)}
-          onLayoutStatesChange={(v) => (layoutStates = v)}
-          registerChartDelegate={registerChartDelegate}
-        />
-      {/if}
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -710,3 +877,98 @@
   {/if}
 </div>
 <svelte:window onkeydown={onWindowKeydown} />
+
+{#snippet globalSettings()}
+  {#if columns.length > 0}
+    <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
+    <ColumnStylePicker
+      columns={columns}
+      styles={$resolvedColumnStyles}
+      onStylesChange={(value) => {
+        columnStyles = value;
+      }}
+    />
+  {/if}
+  <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
+  <div class="flex flex-col gap-2">
+    <ActionButton
+      icon={IconBraces}
+      label="Copy State"
+      title="Copy the current Embedding Atlas state as JSON to clipboard."
+      class="w-48"
+      onClick={onCopyState}
+    />
+    {#if onExportApplication}
+      <ActionButton
+        icon={IconDownload}
+        label="Export Application"
+        title="Download a self-contained static web application"
+        class="w-48"
+        onClick={onExportApplication}
+      />
+    {/if}
+    {#if onExportSelection}
+      <!-- Export selection: same controls that previously lived in the
+           top-toolbar pill — the action button + format picker. The
+           current cross-filter predicate is computed at click time. -->
+      <div class="flex flex-row gap-2">
+        <ActionButton
+          icon={IconExport}
+          label="Export Selection"
+          title="Export rows matching the active filter"
+          class="w-48"
+          onClick={() => onExportSelection!(currentPredicate(), exportFormat)}
+        />
+        <Select
+          label="Format"
+          value={exportFormat}
+          onChange={(v) => (exportFormat = v)}
+          options={[
+            { value: "parquet", label: "Parquet" },
+            { value: "jsonl", label: "JSONL" },
+            { value: "json", label: "JSON" },
+            { value: "csv", label: "CSV" },
+          ]}
+        />
+      </div>
+    {/if}
+  </div>
+  <!-- MCP status and version moved out of the Global tab body and
+       into the SettingsPanel footer, where they stay visible
+       regardless of which tab is selected. -->
+{/snippet}
+
+{#snippet searchSettings()}
+  <div class="flex flex-col gap-4">
+    <div>
+      <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+        MAX RESULTS
+      </div>
+      <div class="flex items-center gap-3">
+        <Slider bind:value={searchLimit} min={50} max={2000} step={50} width={220} />
+        <span class="text-sm font-mono text-slate-700 dark:text-slate-200 tabular-nums w-12 text-right">
+          {searchLimit}
+        </span>
+      </div>
+      <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+        Cap on the number of results the searcher returns. The dropdown shows the top 20; the rest land
+        in the table when the filter toggle is on.
+      </div>
+    </div>
+    {#if searchModes.length > 1}
+      <div>
+        <div class="text-xs font-semibold text-slate-500 dark:text-slate-400 select-none mb-1.5 tracking-wide">
+          MODE
+        </div>
+        <Select
+          value={$searchModeStore}
+          onChange={(v) => searchModeStore.set(v)}
+          options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
+        />
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+          Full-text matches keywords; vector matches by semantic similarity to the embedding.
+        </div>
+      </div>
+    {/if}
+  </div>
+{/snippet}

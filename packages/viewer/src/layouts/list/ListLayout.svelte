@@ -163,11 +163,46 @@
             onChange={(v) => (tableHeight = v)}
           />
         {/if}
-        {#if hasTable}
+        <!--
+          Table panel: kept mounted across hide/show so the
+          @tanstack/table-core + virtualizer + Mosaic clients pay
+          their setup cost once, on first appearance, instead of
+          on every toggle. The previous `{#if hasTable}` +
+          `transition:slide` mounted/unmounted the chart on every
+          toggle; with the table virtualization rebuild that mount
+          is a ~250 ms synchronous burst (createSvelteTable over
+          ~40 columns, HeaderFilterPopover per column, virtualizer
+          init), which showed up as a single dropped frame at the
+          start of the slide-in animation.
+
+          Two-layer wrapper trick (only when an embedding sits
+          above; the no-embedding case has no toggle reachable
+          from the toolbar):
+
+            outer  → animates height 0 ↔ tableHeight, overflow:hidden
+            inner  → always tableHeight tall
+
+          Animating the *outer* height does the visual reveal;
+          keeping the *inner* at a stable height keeps the chart's
+          scroll element a stable size throughout the transition.
+          The @tanstack/svelte-virtual ResizeObserver only fires
+          on actual content-rect changes, so it never re-computes
+          its visible range mid-animation and never reconciles
+          new <tr>s while the user is staring at the slide-in.
+          All visible rows are already rendered on first show; the
+          only work during the animation is paint.
+
+          When `sections.table.length === 0` the {#each} renders
+          nothing, so no chart is mounted in that case either.
+        -->
+        <div
+          class="overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
+          style:height={hasEmbedding ? (hasTable ? `${tableHeight}px` : "0px") : null}
+          style:transition={hasEmbedding ? "height 300ms ease-in-out" : null}
+        >
           <div
-            class="flex flex-col gap-1 overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
-            style:height={hasEmbedding ? `${tableHeight}px` : null}
-            transition:slide
+            class="flex flex-col gap-1 overflow-hidden min-h-0"
+            style:height={hasEmbedding ? `${tableHeight}px` : "100%"}
           >
             {#if chatAvailable}
               <div class="flex-none flex items-center gap-2 px-1">
@@ -195,7 +230,7 @@
               </div>
             {/if}
           </div>
-        {/if}
+        </div>
       </div>
     {/if}
     {#if (hasEmbedding || hasTable) && hasChart}

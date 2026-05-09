@@ -2,6 +2,7 @@
 
 import type { EmbeddingViewConfig, Label } from "@embedding-atlas/component";
 import type { Coordinator, Selection } from "@uwdata/mosaic-core";
+import type { Component, Snippet } from "svelte";
 import type { Readable, Writable } from "svelte/store";
 
 import type { ColumnDesc } from "../utils/database.js";
@@ -87,6 +88,18 @@ export interface ChartContext {
   searchResult: Readable<{ query: any; mode: string; ids: RowID[] } | null>;
 
   /**
+   * Two-way bound search state shared across the atlas. Stored as
+   * Writable so charts mounted under LayoutView (e.g. the embedding
+   * chart that hosts the search input) can read and write it.
+   */
+  searchQuery?: Writable<string>;
+  searchMode?: Writable<string>;
+  searchResultVisible?: Writable<boolean>;
+  searchFilterEnabled?: Writable<boolean>;
+  /** Status string from the searcher (e.g. "Loading model…"). */
+  searcherStatus?: Readable<string>;
+
+  /**
    * The current highlight point(s). When this changes, supported views will highlight the given point(s).
    * When a new point is added to this list, views will animate to reveal the new point.
    */
@@ -158,6 +171,24 @@ export interface ChartViewProps<Spec = unknown, State = unknown> {
 export interface ChartDelegate {
   /** Returns a screenshot of the chart, result should be a data URL of the screenshot. */
   screenshot?: (options?: ScreenshotOptions) => Promise<string>;
+
+  /**
+   * Optional UI snippet contributed to the page-level settings menu.
+   * When present, the snippet is rendered as a titled group inside the
+   * upper-right settings popover, allowing chart-scoped controls
+   * (column visibility, export, …) to live next to global controls.
+   */
+  settingsContent?: Snippet;
+
+  /** Group title for `settingsContent` (e.g. "Table"). Falls back to "Settings" if omitted. */
+  settingsTitle?: string;
+
+  /**
+   * Optional Svelte icon component for the settings tab strip.
+   * When omitted, the host renders a small generic dot. Should
+   * accept a `class` prop so the host can size it (`w-5 h-5`).
+   */
+  settingsIcon?: Component<{ class?: string }>;
 }
 
 export type { ChartBuilderDescription } from "./builder/builder_description.js";
