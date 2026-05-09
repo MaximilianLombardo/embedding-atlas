@@ -88,6 +88,18 @@ export interface ChartContext {
   searchResult: Readable<{ query: any; mode: string; ids: RowID[] } | null>;
 
   /**
+   * Two-way bound search state shared across the atlas. Stored as
+   * Writable so charts mounted under LayoutView (e.g. the embedding
+   * chart that hosts the search input) can read and write it.
+   */
+  searchQuery?: Writable<string>;
+  searchMode?: Writable<string>;
+  searchResultVisible?: Writable<boolean>;
+  searchFilterEnabled?: Writable<boolean>;
+  /** Status string from the searcher (e.g. "Loading model…"). */
+  searcherStatus?: Readable<string>;
+
+  /**
    * The current highlight point(s). When this changes, supported views will highlight the given point(s).
    * When a new point is added to this list, views will animate to reveal the new point.
    */
