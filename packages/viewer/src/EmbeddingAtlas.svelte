@@ -2,6 +2,7 @@
 <script lang="ts">
   import { debounce } from "@embedding-atlas/utils";
   import { Selection } from "@uwdata/mosaic-core";
+  import * as SQL from "@uwdata/mosaic-sql";
   import { onMount, setContext } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { writable } from "svelte/store";
@@ -231,6 +232,47 @@
       clearSearch();
     } else {
       debouncedSearch($searchQueryStore, $searchModeStore);
+    }
+  });
+
+  // Search-as-crossfilter publication. When the user opts into
+  // filtering via the search bar's funnel toggle AND there's a
+  // non-empty query AND the searcher has returned at least one
+  // result, publish a `column IN (ids)` predicate to the global
+  // cross-filter under a stable per-search source identity. The
+  // predicates panel automatically displays this clause as a chip
+  // (just like header filters appear there); clearing the chip
+  // independently clears the filter.
+  //
+  // Source identity pattern mirrors HeaderFilterPopover.svelte —
+  // a stable object so subsequent updates with the same source
+  // replace the existing clause; updating with a `null` predicate
+  // releases it.
+  const searchFilterSource = { __searchFilter: true } as const;
+  $effect(() => {
+    const enabled = $searchFilterEnabledStore;
+    const query = $searchQueryStore;
+    const result = $searchResultStore;
+    const ids = result?.ids ?? [];
+    const shouldFilter = enabled && query !== "" && ids.length > 0;
+    if (shouldFilter) {
+      const predicate = SQL.isIn(
+        SQL.column(data.id),
+        ids.map((id) => SQL.literal(id) as any),
+      );
+      crossFilter.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: predicate as any,
+        value: query,
+      });
+    } else {
+      crossFilter.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: null,
+        value: null,
+      });
     }
   });
 
