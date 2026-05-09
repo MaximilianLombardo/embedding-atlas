@@ -55,6 +55,13 @@
     onClose: () => void;
     /** Snippet for the always-present Global tab. */
     globalContent: Snippet;
+    /**
+     * Page-level (host-owned) groups. Rendered in the tab strip
+     * directly after Global, before any chart-contributed groups.
+     * Used for atlas-scoped settings that aren't tied to a specific
+     * chart — e.g. Search.
+     */
+    pageGroups?: ChartGroup[];
     /** Chart-contributed groups, in registration (layout) order. */
     chartGroups: ChartGroup[];
     /** Caller-controlled active tab key. "global" or a chart key. */
@@ -66,12 +73,23 @@
     version: string;
   }
 
-  let { open, onClose, globalContent, chartGroups, activeKey, onActiveKeyChange, mcpStatus, version }: Props = $props();
+  let {
+    open,
+    onClose,
+    globalContent,
+    pageGroups = [],
+    chartGroups,
+    activeKey,
+    onActiveKeyChange,
+    mcpStatus,
+    version,
+  }: Props = $props();
 
-  // Keep activeKey valid. If a chart whose tab was selected leaves
-  // the layout, fall back to Global so the body always has
-  // something to render.
-  let activeKeyValid = $derived(activeKey === "global" || chartGroups.some((g) => g.key === activeKey));
+  // Keep activeKey valid. If the tab whose key is selected disappears
+  // (chart unmounts or a page group is removed), fall back to Global.
+  let activeKeyValid = $derived(
+    activeKey === "global" || pageGroups.some((g) => g.key === activeKey) || chartGroups.some((g) => g.key === activeKey),
+  );
   $effect(() => {
     if (!activeKeyValid) onActiveKeyChange("global");
   });
@@ -127,40 +145,11 @@
           Global
         </span>
       </button>
+      {#each pageGroups as group (group.key)}
+        {@render tabButton(group)}
+      {/each}
       {#each chartGroups as group (group.key)}
-        {@const isActive = activeKey === group.key}
-        {@const Icon = group.icon}
-        <button
-          type="button"
-          onclick={() => onActiveKeyChange(group.key)}
-          title={group.title}
-          class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px] px-1 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
-          class:bg-white={isActive}
-          class:dark:bg-slate-900={isActive}
-          class:border-blue-500={isActive}
-          class:border-transparent={!isActive}
-          class:text-blue-600={isActive}
-          class:dark:text-blue-400={isActive}
-          class:text-slate-500={!isActive}
-          class:dark:text-slate-400={!isActive}
-          class:hover:text-slate-700={!isActive}
-          class:dark:hover:text-slate-200={!isActive}
-        >
-          {#if Icon}
-            <Icon class="w-5 h-5" />
-          {:else}
-            <div class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></div>
-          {/if}
-          <!-- block + truncate keeps long titles inside the 56px content
-               box (parent button is 64px wide, px-1 strips 8px). Inline
-               spans ignore max-width, so the prior truncate class was
-               silently inert and titles like "Embedding" overflowed. -->
-          <span
-            class="block text-[10px] font-medium leading-tight text-center max-w-[56px] truncate"
-          >
-            {group.title}
-          </span>
-        </button>
+        {@render tabButton(group)}
       {/each}
     </div>
 
@@ -168,7 +157,8 @@
       {#if activeKey === "global"}
         {@render globalContent()}
       {:else}
-        {@const group = chartGroups.find((g) => g.key === activeKey)}
+        {@const group =
+          pageGroups.find((g) => g.key === activeKey) ?? chartGroups.find((g) => g.key === activeKey)}
         {#if group}
           {@render group.content()}
         {/if}
@@ -202,3 +192,37 @@
     <span class="text-slate-400 dark:text-slate-500">v{version}</span>
   </div>
 </div>
+
+{#snippet tabButton(group: ChartGroup)}
+  {@const isActive = activeKey === group.key}
+  {@const Icon = group.icon}
+  <button
+    type="button"
+    onclick={() => onActiveKeyChange(group.key)}
+    title={group.title}
+    class="h-16 flex flex-col items-center justify-center gap-1 transition border-l-[3px] px-1 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
+    class:bg-white={isActive}
+    class:dark:bg-slate-900={isActive}
+    class:border-blue-500={isActive}
+    class:border-transparent={!isActive}
+    class:text-blue-600={isActive}
+    class:dark:text-blue-400={isActive}
+    class:text-slate-500={!isActive}
+    class:dark:text-slate-400={!isActive}
+    class:hover:text-slate-700={!isActive}
+    class:dark:hover:text-slate-200={!isActive}
+  >
+    {#if Icon}
+      <Icon class="w-5 h-5" />
+    {:else}
+      <div class="w-1.5 h-1.5 rounded-full bg-current opacity-60"></div>
+    {/if}
+    <!-- block + truncate keeps long titles inside the 56px content
+         box (parent button is 64px wide, px-1 strips 8px). Inline
+         spans ignore max-width, so a bare span would let titles
+         like "Embedding" overflow. -->
+    <span class="block text-[10px] font-medium leading-tight text-center max-w-[56px] truncate">
+      {group.title}
+    </span>
+  </button>
+{/snippet}
