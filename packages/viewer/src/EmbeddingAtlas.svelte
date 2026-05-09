@@ -146,11 +146,19 @@
     neighbors: { value: "neighbors", label: "Neighbors" },
   };
 
-  let searchMode = $state<"full-text" | "vector">("full-text");
-
-  let searchQuery = $state("");
-  let searcherStatus = $state("");
-  let searchResultVisible = $state(false);
+  // Search state lives in writable stores rather than `$state` so it
+  // can be passed through `chartContext` to the EmbeddingSearchBar
+  // (which is mounted inside `Embedding.svelte`, on the other side
+  // of LayoutView). Stores are the canonical Svelte way to share
+  // mutable state across component boundaries.
+  let searchModeStore = writable<"full-text" | "vector">("full-text");
+  let searchQueryStore = writable("");
+  let searcherStatusStore = writable("");
+  let searchResultVisibleStore = writable(false);
+  // New: filter-table-to-results toggle. Persisted to localStorage so
+  // the user's preference within the dataset survives reloads.
+  const SEARCH_FILTER_KEY = "embedding-atlas:search-filter";
+  let searchFilterEnabledStore = writable(false);
   let searchResultStore = writable<{
     query: any;
     mode: string;
@@ -162,7 +170,7 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
-      searchResultVisible = true;
+      searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
       let searcherResult = await performSearch({
@@ -172,7 +180,7 @@
         mode: mode,
         limit: searchLimit,
         onStatus: (status) => {
-          searcherStatus = status;
+          searcherStatusStore.set(status);
         },
       });
 
@@ -195,7 +203,7 @@
         highlight = "";
       }
 
-      searcherStatus = "";
+      searcherStatusStore.set("");
 
       return {
         query: query,
@@ -215,14 +223,14 @@
 
   function clearSearch() {
     searchResultStore.set(null);
-    searchResultVisible = false;
+    searchResultVisibleStore.set(false);
   }
 
   $effect.pre(() => {
-    if (searchQuery == "") {
+    if ($searchQueryStore == "") {
       clearSearch();
     } else {
-      debouncedSearch(searchQuery, searchMode);
+      debouncedSearch($searchQueryStore, $searchModeStore);
     }
   });
 
@@ -369,6 +377,11 @@
     searchModes: searchModes,
     search: doSearch,
     searchResult: searchResultStore,
+    searchQuery: searchQueryStore,
+    searchMode: searchModeStore,
+    searchResultVisible: searchResultVisibleStore,
+    searchFilterEnabled: searchFilterEnabledStore,
+    searcherStatus: searcherStatusStore,
     highlight: writable(null),
     embeddingViewConfig: embeddingViewConfig,
     embeddingViewLabels: embeddingViewLabels,
@@ -513,6 +526,21 @@
     }
   });
 
+  // Hydrate searchFilterEnabled from localStorage; subscribe to write back.
+  try {
+    const v = localStorage.getItem(SEARCH_FILTER_KEY);
+    if (v != null) searchFilterEnabledStore.set(v === "true");
+  } catch {
+    /* ignore */
+  }
+  searchFilterEnabledStore.subscribe((v) => {
+    try {
+      localStorage.setItem(SEARCH_FILTER_KEY, v ? "true" : "false");
+    } catch {
+      /* ignore */
+    }
+  });
+
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
   onMount(() => {
@@ -591,18 +619,23 @@
       {#if initialized}
         <!-- Left side -->
         <div class="flex flex-row flex-1 justify-between min-w-[180px]">
-          {#if searchMode.length > 0}
+          {#if $searchModeStore.length > 0}
             <div class="relative w-full">
-              <Input type="search" placeholder="Search..." className="w-full max-w-[400px] " bind:value={searchQuery} />
+              <Input
+                type="search"
+                placeholder="Search..."
+                className="w-full max-w-[400px] "
+                bind:value={$searchQueryStore}
+              />
               {#if searchModes.filter((x) => x != "neighbors").length > 1}
                 <Select
                   options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
-                  value={searchMode}
-                  onChange={(v) => (searchMode = v)}
+                  value={$searchModeStore}
+                  onChange={(v) => searchModeStore.set(v)}
                 />
               {/if}
 
-              {#if searchResultVisible}
+              {#if $searchResultVisibleStore}
                 <div
                   class="absolute w-96 left-0 top-[32px] rounded-md right-0 z-20 border border-slate-300 dark:border-slate-600 overflow-hidden resize shadow-lg bg-white/75 dark:bg-slate-800/75 backdrop-blur-sm"
                   style:height="48em"
@@ -622,9 +655,9 @@
                         columnStyles={$resolvedColumnStyles}
                       />
                     {/key}
-                  {:else if searcherStatus != null}
+                  {:else if $searcherStatusStore != null}
                     <div class="p-2">
-                      <Spinner status={searcherStatus} />
+                      <Spinner status={$searcherStatusStore} />
                     </div>
                   {/if}
                 </div>
@@ -809,8 +842,8 @@
           MODE
         </div>
         <Select
-          value={searchMode}
-          onChange={(v) => (searchMode = v)}
+          value={$searchModeStore}
+          onChange={(v) => searchModeStore.set(v)}
           options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
         />
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">

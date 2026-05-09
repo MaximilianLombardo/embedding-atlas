@@ -33,11 +33,14 @@
   import { cubicOut } from "svelte/easing";
 
   import Button from "../../widgets/Button.svelte";
+  import EmbeddingSearchBar from "../../widgets/EmbeddingSearchBar.svelte";
   import Select from "../../widgets/Select.svelte";
   import Slider from "../../widgets/Slider.svelte";
   import Legend from "./Legend.svelte";
 
   import { IconEmbeddingView } from "../../assets/icons.js";
+  import { writable } from "svelte/store";
+
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
   import { resolveChartTheme } from "../common/theme.js";
@@ -205,6 +208,29 @@
     currentViewportAnimation = requestAnimationFrame(callback);
   }
 
+  // Search bar plumbing: the host (EmbeddingAtlas.svelte) wires its
+  // search state into `chartContext` as Writable stores. The bar
+  // renders only when *all* of those are present (otherwise the
+  // chart was constructed in a context without atlas-level search
+  // — e.g. as an embedded component — and the bar should be
+  // invisible). Local fallback stores keep the `$store` template
+  // syntax happy when the host hasn't wired them.
+  // svelte-ignore state_referenced_locally
+  let searchQueryStore = $derived(context.searchQuery ?? writable(""));
+  // svelte-ignore state_referenced_locally
+  let searchFilterEnabledStore = $derived(context.searchFilterEnabled ?? writable(false));
+  // svelte-ignore state_referenced_locally
+  let searchResultVisibleStore = $derived(context.searchResultVisible ?? writable(false));
+  // svelte-ignore state_referenced_locally
+  let searcherStatusStore = $derived(context.searcherStatus ?? writable(""));
+  let hasSearch = $derived(
+    context.searchQuery != null &&
+      context.searchMode != null &&
+      context.searchResultVisible != null &&
+      context.searchFilterEnabled != null &&
+      context.searcherStatus != null,
+  );
+
   // Register an "Embedding" tab in the page-level settings drawer.
   // The snippet content is defined below; it captures spec /
   // categoryColumn / categoryLegend etc. via closure and stays in
@@ -306,6 +332,30 @@
          chart-scoped settings; the embedding canvas no longer
          displays controls overlaid on the data. -->
   </div>
+  <!-- Search bar: glass-translucent input + dropdown anchored to
+       the embedding canvas's top-left corner. State (query / mode /
+       filter-toggle / result store / status) lives in
+       EmbeddingAtlas.svelte and travels through `chartContext` as
+       Writable / Readable stores. The search bar only renders if
+       the host has wired the stores — otherwise the chart is being
+       used in a context (e.g. an embed) without atlas-level search
+       and the bar should be invisible. -->
+  {#if hasSearch}
+    <EmbeddingSearchBar
+      searchQuery={$searchQueryStore}
+      onSearchQueryChange={(v) => context.searchQuery!.set(v)}
+      searchFilterEnabled={$searchFilterEnabledStore}
+      onSearchFilterEnabledChange={(v) => context.searchFilterEnabled!.set(v)}
+      searchResult={context.searchResult as any}
+      searcherStatus={$searcherStatusStore}
+      visible={$searchResultVisibleStore}
+      onResultClick={(item) => context.highlight.set(item.id)}
+      onClear={() => {
+        context.searchQuery!.set("");
+        context.searchResultVisible!.set(false);
+      }}
+    />
+  {/if}
 </div>
 
 {#snippet embeddingSettings()}
