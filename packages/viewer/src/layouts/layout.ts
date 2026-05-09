@@ -35,5 +35,3 @@ export interface LayoutProps<State = unknown> {
     [{ id: string; width?: number | "container"; height?: number | "container"; mode?: "view" | "edit" }]
   >;
 }
-
-export type LayoutOptionsProps<State = unknown> = Omit<LayoutProps<State>, "chartView">;

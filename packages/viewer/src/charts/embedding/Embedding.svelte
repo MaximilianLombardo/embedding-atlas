@@ -327,8 +327,8 @@
     {/if}
     <!-- The in-pane Color picker + Settings popup that previously
          lived here have been moved into the Embedding tab of the
-         page-level settings drawer (see EmbeddingAtlas.svelte's
-         SettingsDrawer). The drawer is the single home for all
+         page-level settings panel (see EmbeddingAtlas.svelte's
+         SettingsPanel). The panel is the single home for all
          chart-scoped settings; the embedding canvas no longer
          displays controls overlaid on the data. -->
   </div>

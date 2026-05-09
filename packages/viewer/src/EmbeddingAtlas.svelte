@@ -622,12 +622,12 @@
     }
   });
 
-  // Toggle a boolean field on the active layout's state. Used by the
-  // icon strip's middle section to flip showEmbedding / showTable /
-  // showCharts visibility. Mirrors ListLayoutOptions.svelte's
-  // ToggleButton bind: pattern but as a single-call helper because
-  // we feed plain `{ icon, onClick }` button specs to AtlasIconStrip
-  // rather than rendering ToggleButtons inline.
+  // Toggle a boolean field on the active layout's state. Used by
+  // the icon strip's middle section to flip showEmbedding /
+  // showTable / showCharts visibility — a single-call helper
+  // because we feed plain `{ icon, onClick }` button specs to
+  // AtlasIconStrip rather than rendering bindable ToggleButtons
+  // inline.
   function toggleLayoutField(field: string, defaultValue: boolean) {
     const current = ((layoutStates[layout] ?? {}) as Record<string, any>)[field] ?? defaultValue;
     layoutStates = {
@@ -644,8 +644,7 @@
   // Top section (layout): list / dashboard.
   // Middle section (show/hide, list-layout only): embedding /
   //   table / charts. Hidden for the dashboard layout because
-  //   those toggles are list-specific (mirrors LayoutOptionsView,
-  //   which only renders the show/hide controls for list).
+  //   those toggles are list-specific.
   // Bottom section (atlas-level): theme toggle (only when the host
   //   doesn't hard-code a color scheme via `colorScheme` prop) +
   //   settings gear. The bottom section is pinned to the floor by
@@ -935,7 +934,7 @@
     {/if}
   </div>
   <!-- MCP status and version moved out of the Global tab body and
-       into the SettingsDrawer footer, where they stay visible
+       into the SettingsPanel footer, where they stay visible
        regardless of which tab is selected. -->
 {/snippet}
 

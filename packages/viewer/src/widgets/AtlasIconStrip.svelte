@@ -19,7 +19,7 @@
   - Presentational shell only. The host (EmbeddingAtlas.svelte) wires
     state by passing `sections` with concrete handlers; the strip has
     no atlas-state knowledge of its own.
-  - Each button mirrors the active-tab visual from SettingsDrawer.svelte:
+  - Each button mirrors the active-tab visual from SettingsPanel.svelte:
     blue left-border accent, white / slate-900 fill when active, slate
     icon color otherwise. Width is fixed at 48px (`w-12`), buttons are
     48×48px with no labels — icons only.
@@ -28,7 +28,7 @@
     how many sections sit above.
   - Surface / border tokens match the rest of the atlas's chrome
     (`slate-100 / slate-800`, `slate-300 / slate-600`) — see
-    `Button.svelte` and `SettingsDrawer.svelte` for canonical
+    `Button.svelte` and `SettingsPanel.svelte` for canonical
     references.
 -->
 <script lang="ts">
