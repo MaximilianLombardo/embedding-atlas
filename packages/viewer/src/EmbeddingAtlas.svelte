@@ -12,16 +12,13 @@
   import LayoutView from "./layouts/LayoutView.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
-  import SearchResultList from "./views/SearchResultList.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
   import Button from "./widgets/Button.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
-  import Input from "./widgets/Input.svelte";
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
   import SettingsDrawer from "./widgets/SettingsDrawer.svelte";
   import Slider from "./widgets/Slider.svelte";
-  import Spinner from "./widgets/Spinner.svelte";
 
   import {
     IconBraces,
@@ -659,62 +656,17 @@
     <!-- Toolbar -->
     <div class="m-2 flex flex-row items-center gap-2 flex-wrap">
       {#if initialized}
-        <!-- Left side -->
-        <div class="flex flex-row flex-1 justify-between min-w-[180px]">
-          {#if $searchModeStore.length > 0}
-            <div class="relative w-full">
-              <Input
-                type="search"
-                placeholder="Search..."
-                className="w-full max-w-[400px] "
-                bind:value={$searchQueryStore}
-              />
-              {#if searchModes.filter((x) => x != "neighbors").length > 1}
-                <Select
-                  options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
-                  value={$searchModeStore}
-                  onChange={(v) => searchModeStore.set(v)}
-                />
-              {/if}
-
-              {#if $searchResultVisibleStore}
-                <div
-                  class="absolute w-96 left-0 top-[32px] rounded-md right-0 z-20 border border-slate-300 dark:border-slate-600 overflow-hidden resize shadow-lg bg-white/75 dark:bg-slate-800/75 backdrop-blur-sm"
-                  style:height="48em"
-                >
-                  {#if $searchResultStore != null}
-                    {@const searchResult = $searchResultStore}
-                    {#key searchResult}
-                      <SearchResultList
-                        items={searchResult.items}
-                        label={searchResult.label}
-                        highlight={searchResult.highlight}
-                        limit={searchLimit}
-                        onClick={async (item) => {
-                          chartContext.highlight.set(item.id);
-                        }}
-                        onClose={clearSearch}
-                        columnStyles={$resolvedColumnStyles}
-                      />
-                    {/key}
-                  {:else if $searcherStatusStore != null}
-                    <div class="p-2">
-                      <Spinner status={$searcherStatusStore} />
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {:else}
-            <div class="text-slate-500 dark:text-slate-400">Embedding Atlas</div>
-          {/if}
-        </div>
-        <!-- Filter status (count + clear) and Export Selection both
-             moved out of the top toolbar:
-               - FilteredCount + clear-X live in the embedding pane's
-                 bottom-right overlay (`charts/embedding/Embedding.svelte`).
-               - Export Selection lives in the Global → Export tab of
-                 the settings popover above. -->
+        <!-- Left side: spacer where the search bar used to live.
+             The search bar moved into the embedding canvas's
+             upper-left corner (charts/embedding/Embedding.svelte
+             mounts EmbeddingSearchBar). The right-hand pill
+             (FilteredCount + clear-X + Export Selection) moved
+             into the embedding pane's bottom-right StatusBar and
+             the settings drawer's Global → Export section. The
+             remaining toolbar buttons below (layout selector,
+             theme toggle, settings gear) will move to a left-side
+             icon strip in Phase 2. -->
+        <div class="flex-1"></div>
         <div class="flex flex-none flex-row gap-2">
           <div class="grid grid-cols-1 grid-rows-1 justify-items-end items-center">
             {#key layout}
