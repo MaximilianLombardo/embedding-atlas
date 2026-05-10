@@ -8,7 +8,8 @@
     "build": "uv run python scripts/download_duckdb_extensions.py && vite build && vite build --config vite.config.lib.js",
     "check": "svelte-check",
     "package": "npm run build && publint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "files": [
     "distlib"
@@ -44,6 +45,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@iconify-json/fluent": "^1.2.41",
     "@iconify-json/svg-spinners": "^1.2.4",
+    "@playwright/test": "^1.59.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/postcss": "^4.2.2",
@@ -53,6 +55,7 @@
     "@tsconfig/svelte": "^5.0.8",
     "@types/d3": "^7.4.3",
     "@types/mark.js": "^8.11.12",
+    "bits-ui": "^2.18.1",
     "cmdk-sv": "^0.0.19",
     "codemirror-json-schema": "^0.8.1",
     "d3": "^7.9.0",
