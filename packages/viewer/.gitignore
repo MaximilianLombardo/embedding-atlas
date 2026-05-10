@@ -1,1 +1,5 @@
 public/duckdb-wasm/
+
+# Playwright artifacts
+test-results/
+playwright-report/

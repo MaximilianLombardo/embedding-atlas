@@ -10,9 +10,14 @@ import { defineConfig, devices } from "@playwright/test";
  * Not gated in CI yet — run on demand with `npm run test:e2e -w
  * @embedding-atlas/viewer`. The dev server is auto-started by
  * Playwright's `webServer` config below; if a dev server is already
- * running on http://localhost:5173, that one is reused
- * (`reuseExistingServer: true`).
+ * running on the target port, that one is reused
+ * (`reuseExistingServer: true`). We explicitly pin the dev port to
+ * 5183 (distinct from vite's default 5173) so the spec can run in
+ * a worktree alongside other dev servers without port conflicts.
  */
+const DEV_PORT = 5183;
+const BASE_URL = `http://localhost:${DEV_PORT}`;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false, // localStorage state is shared; serialize.
@@ -20,12 +25,12 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: BASE_URL,
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:5173",
+    command: `npm run dev -- --port ${DEV_PORT} --strictPort`,
+    url: BASE_URL,
     reuseExistingServer: true,
     timeout: 60000,
   },
