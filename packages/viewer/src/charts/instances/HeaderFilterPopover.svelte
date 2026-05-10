@@ -17,8 +17,18 @@
 
   import PopupButton from "../../widgets/PopupButton.svelte";
 
-  import { IconClose, IconFilter } from "../../assets/icons.js";
+  import { IconCheck, IconFilter } from "../../assets/icons.js";
   import type { ColumnDesc } from "../../utils/database.js";
+
+  // Sentinel for SQL NULL — used in the `selected[]` array to
+  // distinguish "user picked the (null) row" from "user picked the
+  // string 'null'." Without this, String(null) → "null" collides with
+  // a real string value of "null" and the predicate sends
+  // `col IN ('null')`, which never matches actual NULL rows.
+  // The `\0` null-byte makes accidental collision with real data
+  // effectively impossible (it can't appear in a JS string from a
+  // SQL result via the standard transports).
+  const NULL_SENTINEL = "\0__NULL__\0";
 
   interface Props {
     column: string;
@@ -47,12 +57,23 @@
 
   // svelte-ignore state_referenced_locally
   let distinctValues = $state.raw<{ value: any; count: number }[] | "loading" | "error">("loading");
+  // Total distinct count fetched alongside the top-100 list. When this
+  // exceeds the displayed length, we render a "showing top N of M"
+  // notice so users know the list is truncated.
+  let totalDistinctCount = $state.raw<number | null>(null);
 
   // Categorical-only for v1: jsType "string" or "list" (array). Numbers/dates
   // get a placeholder until a numeric-range follow-up.
   let jsType = $derived(columnDesc?.jsType);
   let isCategorical = $derived(jsType === "string" || jsType === "string[]");
   let active = $derived(selected.length > 0);
+
+  // True when the displayed list is a strict subset of the column's
+  // distinct values — the user might have selected something not
+  // visible here, so we hint at it.
+  let truncated = $derived(
+    Array.isArray(distinctValues) && totalDistinctCount != null && totalDistinctCount > distinctValues.length,
+  );
 
   // Fetch distinct values lazily when the popover opens. Cached locally
   // — if the user reopens the popover later, we keep the previously
@@ -71,13 +92,22 @@
       // For list-typed columns, unnest first so each element gets its
       // own count. For string columns, group directly.
       const colExpr = jsType === "string[]" ? SQL.sql`UNNEST(${SQL.column(column)})` : SQL.column(column);
-      const q = SQL.Query.from(table)
+      // Two queries in parallel: top-100 distinct values by count, plus
+      // the total distinct count for the truncation indicator.
+      const valuesQ = SQL.Query.from(table)
         .select({ value: colExpr, count: SQL.count() })
         .groupby("value")
         .orderby(SQL.desc("count"))
         .limit(100);
-      const result: any = await coordinator.query(q);
-      distinctValues = (result.toArray() as any[]).map((r) => ({ value: r.value, count: Number(r.count) }));
+      const totalQ = SQL.Query.from(table).select({
+        total: SQL.sql`COUNT(DISTINCT ${colExpr})`,
+      });
+      const [valuesResult, totalResult]: any[] = await Promise.all([
+        coordinator.query(valuesQ),
+        coordinator.query(totalQ),
+      ]);
+      distinctValues = (valuesResult.toArray() as any[]).map((r) => ({ value: r.value, count: Number(r.count) }));
+      totalDistinctCount = Number(totalResult.toArray()[0]?.total ?? distinctValues.length);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("HeaderFilterPopover query failed", e);
@@ -85,12 +115,19 @@
     }
   }
 
+  // Encode a value for the `selected` string array. Null/undefined map
+  // to NULL_SENTINEL so they survive the round trip (otherwise
+  // String(null) collides with a real "null" string value).
+  function encode(v: any): string {
+    return v == null ? NULL_SENTINEL : String(v);
+  }
+
   function isSelected(v: any): boolean {
-    return selected.includes(String(v));
+    return selected.includes(encode(v));
   }
 
   function toggle(v: any) {
-    const s = String(v);
+    const s = encode(v);
     const next = selected.includes(s) ? selected.filter((x) => x !== s) : [...selected, s];
     publish(next);
   }
@@ -111,14 +148,31 @@
       });
       return;
     }
-    let expr;
+    // Split the selection into a real-values list and a "user picked
+    // (null)" flag. The two need different SQL: `col IN (...)` for
+    // real values, `col IS NULL` for null. If both, OR them.
+    const includeNull = values.includes(NULL_SENTINEL);
+    const realValues = values.filter((v) => v !== NULL_SENTINEL);
+
+    let expr: any;
     if (jsType === "string[]") {
-      // For list columns, ANY-match: row matches if list_has_any(col, [...]) is true.
-      // DuckDB's list_has_any returns true if any element of the second array is in the first.
-      expr = SQL.sql`list_has_any(${SQL.column(column)}, [${values.map((v) => SQL.literal(v)).join(", ")}])`;
+      // For list columns: list_has_any(col, [...]) for the real values,
+      // OR `col IS NULL` if the user picked (null). list_has_any is
+      // null-safe (returns false on a NULL list), so we have to add the
+      // NULL branch explicitly.
+      const realExpr = realValues.length
+        ? SQL.sql`list_has_any(${SQL.column(column)}, [${realValues.map((v) => SQL.literal(v)).join(", ")}])`
+        : null;
+      const nullExpr = includeNull ? SQL.sql`${SQL.column(column)} IS NULL` : null;
+      expr = realExpr && nullExpr ? SQL.sql`(${realExpr}) OR (${nullExpr})` : (realExpr ?? nullExpr);
     } else {
-      expr = SQL.isIn(SQL.column(column), values.map((v) => SQL.literal(v) as any));
+      const realExpr = realValues.length
+        ? SQL.isIn(SQL.column(column), realValues.map((v) => SQL.literal(v) as any))
+        : null;
+      const nullExpr = includeNull ? SQL.sql`${SQL.column(column)} IS NULL` : null;
+      expr = realExpr && nullExpr ? SQL.sql`(${realExpr}) OR (${nullExpr})` : (realExpr ?? nullExpr);
     }
+
     filter.update({
       source,
       clients: new Set(),
@@ -173,7 +227,7 @@
     {:else if distinctValues === "error"}
       <div class="px-2 py-2 text-xs text-amber-600 dark:text-amber-400">Couldn't load values for this column.</div>
     {:else}
-      {#each distinctValues as { value, count } (String(value))}
+      {#each distinctValues as { value, count } (encode(value))}
         <button
           type="button"
           class="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-left text-sm text-slate-700 dark:text-slate-200"
@@ -189,15 +243,23 @@
             class:dark:border-slate-600={!isSelected(value)}
           >
             {#if isSelected(value)}
-              <span class="text-white text-xs leading-none">
-                <IconClose />
-              </span>
+              <IconCheck class="w-3 h-3 text-white" />
             {/if}
           </span>
-          <span class="truncate flex-1 min-w-0">{value ?? "(null)"}</span>
+          <span class="truncate flex-1 min-w-0" class:italic={value == null} class:text-slate-400={value == null}>
+            {value == null ? "(null)" : value}
+          </span>
           <span class="text-xs text-slate-400 dark:text-slate-500 flex-shrink-0">{count.toLocaleString()}</span>
         </button>
       {/each}
+      {#if truncated}
+        <div
+          class="px-2 py-1.5 mt-1 text-[11px] italic text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-700"
+        >
+          Showing top {(distinctValues as { value: any; count: number }[]).length} of
+          {totalDistinctCount?.toLocaleString()} distinct values.
+        </div>
+      {/if}
     {/if}
   </div>
 </PopupButton>
