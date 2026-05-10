@@ -37,7 +37,7 @@
   import Slider from "../../widgets/Slider.svelte";
   import Legend from "./Legend.svelte";
 
-  import { IconEmbeddingView } from "../../assets/icons.js";
+  import { IconEmbeddingSettings } from "../../assets/icons.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
   import { resolveChartTheme } from "../common/theme.js";
@@ -217,10 +217,12 @@
     return untrack(() => {
       if (!registerDelegate) return;
       return registerDelegate({
-        // Short label — the strip tabs are 48 px wide. "Embed" plus
-        // the scatter-plot icon is enough to identify the tab.
+        // Short label — the strip tabs are 48 px wide. The icon is
+        // intentionally distinct from IconEmbeddingView (which the
+        // strip's show/hide-embedding toggle uses) so the two
+        // embedding-related buttons are visually unambiguous.
         settingsTitle: "Embed",
-        settingsIcon: IconEmbeddingView,
+        settingsIcon: IconEmbeddingSettings,
         settingsContent: embeddingSettings,
       });
     });

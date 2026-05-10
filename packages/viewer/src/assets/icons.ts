@@ -14,6 +14,11 @@ export { default as IconRight } from "~icons/fluent/chevron-right-16-filled";
 export { default as IconChevronUp, default as IconUp } from "~icons/fluent/chevron-up-16-filled";
 export { default as IconAnnotation } from "~icons/fluent/comment-text-16-filled";
 export { default as IconEmbeddingView } from "~icons/fluent/data-scatter-20-filled";
+// Distinct from IconEmbeddingView so the strip's show/hide-embedding
+// toggle doesn't share an icon with the Embed-settings tab. Color is
+// the headline control inside the Embed tab (category column dropdown)
+// so a color wheel reads naturally as "embedding appearance settings."
+export { default as IconEmbeddingSettings } from "~icons/fluent/color-16-filled";
 export { default as IconClose } from "~icons/fluent/dismiss-16-filled";
 export { default as IconDownload, default as IconExport } from "~icons/fluent/document-arrow-down-16-filled";
 export { default as IconEdit } from "~icons/fluent/edit-16-filled";
