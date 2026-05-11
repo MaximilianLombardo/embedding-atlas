@@ -7,14 +7,13 @@
   import { writable } from "svelte/store";
 
   import LayoutView from "./layouts/LayoutView.svelte";
-  import Resizer from "./layouts/list/Resizer.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
   import ActionButton from "./widgets/ActionButton.svelte";
   import AtlasIconStrip from "./widgets/AtlasIconStrip.svelte";
   import CommandPalette from "./widgets/CommandPalette.svelte";
   import Select from "./widgets/Select.svelte";
-  import SettingsPanel from "./widgets/SettingsPanel.svelte";
+  import SettingsModal from "./widgets/SettingsModal.svelte";
   import Slider from "./widgets/Slider.svelte";
 
   import {
@@ -330,12 +329,14 @@
       e.preventDefault();
       return;
     }
-    // ⌘B / Ctrl+B toggles the settings panel — VS Code parity.
-    // When opening, lands on the user's last-active section
-    // (default "global"). Browser default for ⌘B (toggle bookmarks
-    // bar in Chrome / Safari) is suppressed via preventDefault.
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
-      panelKey = panelKey !== null ? null : lastNonNullKey;
+    // ⌘B / Ctrl+B and ⌘, / Ctrl+, both toggle the settings modal.
+    // ⌘B is kept for VS Code muscle-memory; ⌘, is the OS-standard
+    // "open preferences" shortcut. When opening, the modal lands on
+    // the user's last-active tab (persisted as `activeTab`). Browser
+    // defaults for ⌘B (toggle bookmarks bar) and ⌘, (none in most
+    // browsers) are suppressed via preventDefault.
+    if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "b" || e.key === ",")) {
+      settingsOpen = !settingsOpen;
       e.preventDefault();
       return;
     }
@@ -477,33 +478,31 @@
     return groups;
   });
 
-  // Source of truth for "what panel section is showing":
-  //   panelKey === null     → panel closed
-  //   panelKey === "global" → panel open, Global section
-  //   panelKey === <key>    → panel open to that section
-  //
-  // `lastNonNullKey` remembers the last open section so re-opening
-  // (via the gear toggle, ⌘B, or page reload) lands on the user's
-  // preferred tab rather than always Global. Both persisted.
-  // Legacy "embedding-atlas:settings-tab" is read once for users
-  // who set it under the previous chrome version.
-  const PANEL_KEY_KEY = "embedding-atlas:panel-key";
-  const PANEL_LAST_KEY = "embedding-atlas:panel-last-key";
-  let panelKey = $state<string | null>(null);
-  let lastNonNullKey = $state<string>("global");
-  $effect(() => {
-    if (panelKey !== null) lastNonNullKey = panelKey;
-  });
+  // Settings modal state.
+  //   settingsOpen — whether the modal is currently mounted/visible.
+  //                  Intentionally NOT persisted: a modal is an
+  //                  ephemeral "focus experience" — closing the app
+  //                  and reopening should not reopen the modal. This
+  //                  matches macOS preferences behavior.
+  //   activeTab    — which tab the modal lands on. Persisted so the
+  //                  user returns to the section they last used.
+  //                  Defaults to "global". Legacy keys are read once
+  //                  for users who set them under the previous
+  //                  chrome version (right-edge drawer / inline
+  //                  panel).
+  const SETTINGS_TAB_KEY = "embedding-atlas:settings-active-tab";
+  let settingsOpen = $state(false);
+  let activeTab = $state<string>("global");
   $effect(() => {
     try {
-      const v = localStorage.getItem(PANEL_KEY_KEY);
-      if (v != null) panelKey = v === "" ? null : v;
-      const last = localStorage.getItem(PANEL_LAST_KEY);
-      if (last) {
-        lastNonNullKey = last;
+      const v = localStorage.getItem(SETTINGS_TAB_KEY);
+      if (v) {
+        activeTab = v;
       } else {
-        const legacy = localStorage.getItem("embedding-atlas:settings-tab");
-        if (legacy) lastNonNullKey = legacy;
+        const legacy =
+          localStorage.getItem("embedding-atlas:panel-last-key") ??
+          localStorage.getItem("embedding-atlas:settings-tab");
+        if (legacy) activeTab = legacy;
       }
     } catch {
       /* ignore */
@@ -511,27 +510,11 @@
   });
   $effect(() => {
     try {
-      localStorage.setItem(PANEL_KEY_KEY, panelKey ?? "");
-      localStorage.setItem(PANEL_LAST_KEY, lastNonNullKey);
+      localStorage.setItem(SETTINGS_TAB_KEY, activeTab);
     } catch {
       /* ignore */
     }
   });
-  // Width of the inline settings panel when open. Animated between
-  // 0 (closed) and this value (open) by SettingsPanel itself; the
-  // resizer between the panel and the main content drives drag
-  // resize. Persisted to localStorage so the user's chosen width
-  // survives reloads. Range 240–720 px; values outside this band
-  // on read are ignored and the default kicks in instead.
-  const SETTINGS_PANEL_WIDTH_KEY = "embedding-atlas:settings-panel-width";
-  const SETTINGS_PANEL_WIDTH_DEFAULT = 360;
-  const SETTINGS_PANEL_WIDTH_MIN = 240;
-  const SETTINGS_PANEL_WIDTH_MAX = 720;
-  let settingsPanelWidth = $state(SETTINGS_PANEL_WIDTH_DEFAULT);
-  // Container width for the horizontal flex root, bound via
-  // `bind:clientWidth`. Used to clamp the resizer's max value so
-  // the panel can't squeeze the main content below ~200px.
-  let containerWidth = $state(800);
 
   // Hydrate searchLimit from localStorage on mount; written back on change.
   $effect(() => {
@@ -548,28 +531,6 @@
   $effect(() => {
     try {
       localStorage.setItem(SEARCH_LIMIT_KEY, String(searchLimit));
-    } catch {
-      /* ignore */
-    }
-  });
-
-  // Hydrate settingsPanelWidth from localStorage on mount; written back on change.
-  $effect(() => {
-    try {
-      const v = localStorage.getItem(SETTINGS_PANEL_WIDTH_KEY);
-      if (v != null) {
-        const n = Number(v);
-        if (Number.isFinite(n) && n >= SETTINGS_PANEL_WIDTH_MIN && n <= SETTINGS_PANEL_WIDTH_MAX) {
-          settingsPanelWidth = n;
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  });
-  $effect(() => {
-    try {
-      localStorage.setItem(SETTINGS_PANEL_WIDTH_KEY, String(settingsPanelWidth));
     } catch {
       /* ignore */
     }
@@ -594,22 +555,27 @@
   // hand it to the strip. See widgets/AtlasIconStrip.svelte.
   //
   // Sections (top to bottom):
-  //   1. tabs (kind="tabs")    — Global, Search, chart-contributed.
-  //                              Open / switch / close the panel.
-  //   2. layout (kind="radio") — List / Dashboard. Switch layout.
-  //   3. show-hide (kind="toggles") — Embedding / Table / Charts
-  //                              visibility. Always visible AND
-  //                              always active, on every layout.
-  //                              State lives on the LIST layout
-  //                              regardless of current layout, so
-  //                              clicks on dashboard mutate list
-  //                              state silently and the effect
-  //                              appears on next list-switch.
-  //   4. theme (kind="momentary") — Sun ↔ Moon icon swap. Hidden
-  //                              when the host hard-codes
-  //                              colorScheme.
+  //   1. layout   (kind="radio")     — List / Dashboard. Switch layout.
+  //   2. show-hide (kind="toggles")  — Embedding / Table / Charts
+  //                                    visibility. Always visible AND
+  //                                    always active, on every layout.
+  //                                    State lives on the LIST layout
+  //                                    regardless of current layout, so
+  //                                    clicks on dashboard mutate list
+  //                                    state silently and the effect
+  //                                    appears on next list-switch.
+  //   3. settings (kind="momentary") — Gear icon, opens the settings
+  //                                    modal. Section navigation
+  //                                    (Global / Search / chart-
+  //                                    contributed) lives inside the
+  //                                    modal as a vertical tab strip
+  //                                    rather than in the icon strip.
+  //   4. theme    (kind="momentary") — Sun ↔ Moon icon swap. Hidden
+  //                                    when the host hard-codes
+  //                                    colorScheme.
   // The LAST section is pinned to the bottom via AtlasIconStrip's
-  // mt-auto rule on its preceding divider.
+  // mt-auto rule on its preceding divider; with no host-supplied
+  // colorScheme, that's the theme section. With one, it's settings.
   let stripSections = $derived.by(() => {
     // Show-hide active states always reflect LIST-LAYOUT state, so
     // the buttons read truthfully even while the user is on dashboard.
@@ -627,47 +593,11 @@
     };
     type StripSection = {
       key: string;
-      kind: "tabs" | "radio" | "toggles" | "momentary";
+      kind: "radio" | "toggles" | "momentary";
       buttons: StripButton[];
     };
 
-    // Tabs section (top): one button per panel section. Click opens
-    // the panel to that section; click the active tab again closes
-    // it. Sourced from Global + Search + chart-contributed groups,
-    // so adding a chart automatically surfaces a tab here.
-    const tabsButtons: StripButton[] = [
-      {
-        value: "global",
-        icon: IconSettings,
-        title: "Global settings",
-        active: panelKey === "global",
-        onClick: () => (panelKey = panelKey === "global" ? null : "global"),
-      },
-      {
-        value: "search",
-        icon: IconSearch,
-        title: "Search settings",
-        active: panelKey === "search",
-        onClick: () => (panelKey = panelKey === "search" ? null : "search"),
-      },
-    ];
-    for (const g of chartSettingsGroups) {
-      const k = g.key;
-      tabsButtons.push({
-        value: k,
-        icon: g.icon ?? IconSettings,
-        title: g.title,
-        active: panelKey === k,
-        onClick: () => (panelKey = panelKey === k ? null : k),
-      });
-    }
-
     const sections: StripSection[] = [
-      {
-        key: "tabs",
-        kind: "tabs",
-        buttons: tabsButtons,
-      },
       {
         key: "layout",
         kind: "radio",
@@ -688,32 +618,42 @@
           },
         ],
       },
+      {
+        key: "show-hide",
+        kind: "toggles",
+        buttons: [
+          {
+            icon: IconEmbeddingView,
+            title: "Show / hide embedding",
+            active: showEmbedding,
+            onClick: () => toggleListField("showEmbedding", true),
+          },
+          {
+            icon: IconTable,
+            title: "Show / hide table",
+            active: showTable,
+            onClick: () => toggleListField("showTable", true),
+          },
+          {
+            icon: IconMenu,
+            title: "Show / hide charts",
+            active: showCharts,
+            onClick: () => toggleListField("showCharts", true),
+          },
+        ],
+      },
+      {
+        key: "settings",
+        kind: "momentary",
+        buttons: [
+          {
+            icon: IconSettings,
+            title: "Settings (⌘B)",
+            onClick: () => (settingsOpen = true),
+          },
+        ],
+      },
     ];
-
-    sections.push({
-      key: "show-hide",
-      kind: "toggles",
-      buttons: [
-        {
-          icon: IconEmbeddingView,
-          title: "Show / hide embedding",
-          active: showEmbedding,
-          onClick: () => toggleListField("showEmbedding", true),
-        },
-        {
-          icon: IconTable,
-          title: "Show / hide table",
-          active: showTable,
-          onClick: () => toggleListField("showTable", true),
-        },
-        {
-          icon: IconMenu,
-          title: "Show / hide charts",
-          active: showCharts,
-          onClick: () => toggleListField("showCharts", true),
-        },
-      ],
-    });
 
     if (colorSchemeProp == null) {
       sections.push({
@@ -734,53 +674,28 @@
     return sections;
   });
 
-  // Flat list of every panel section the SettingsPanel might render.
-  // Order: Global, Search, then chart-contributed sections in chart
-  // insertion order. The strip's "tabs" section is derived from the
-  // same source, so the strip and panel always agree on what
-  // sections exist.
+  // Flat list of every panel section the SettingsModal renders as a
+  // vertical tab. Order: Global, Search, then chart-contributed
+  // sections in chart insertion order. Each section provides its own
+  // icon for the modal's sidebar; chart-contributed sections inherit
+  // the icon from their ChartDelegate.settingsIcon registration.
   let panelSections = $derived.by(() => {
     return [
-      { key: "global", title: "Global", content: globalSettings },
-      { key: "search", title: "Search", content: searchSettings },
-      ...chartSettingsGroups.map((g) => ({ key: g.key, title: g.title, content: g.content })),
+      { key: "global", title: "Global", icon: IconSettings, content: globalSettings },
+      { key: "search", title: "Search", icon: IconSearch, content: searchSettings },
+      ...chartSettingsGroups.map((g) => ({ key: g.key, title: g.title, icon: g.icon, content: g.content })),
     ];
   });
 
-  // Race-fix for panelKey persistence. On reload, panelKey hydrates
-  // synchronously from localStorage but chart delegates register
-  // asynchronously as charts mount. If we validate the persisted
-  // panelKey before charts have registered, sections like "embed"
-  // (the embedding chart's settings tab) will look unknown and we'd
-  // wrongly clear the user's preference.
-  //
-  // Strategy: defer validation until ALL expected chart sections
-  // have registered. `expectedChartIds` is the set of chart ids
-  // declared in `charts` after `defaultCharts` resolves; we wait
-  // for `chartDelegates.size` to reach that count, then check if
-  // panelKey resolves to any known section. If not, reset to null
-  // AND clear lastNonNullKey to "global" so the next gear-click
-  // lands on a known-good tab.
-  //
-  // Runs once per session — subsequent user-initiated panel-open
-  // attempts pointing at unknown sections won't trigger a reset.
-  let raceFixApplied = $state(false);
-  let expectedChartIds = $derived(new Set(Object.keys(charts)));
-  $effect(() => {
-    if (raceFixApplied) return;
-    if (!initialized) return;
-    if (expectedChartIds.size === 0) return;
-    // Wait until every expected chart id has registered at least
-    // one delegate. ChartView always registers a screenshot
-    // delegate on mount, so reaching this size means every chart
-    // is in the registry — including any contributed settingsTitle.
-    if (chartDelegates.size < expectedChartIds.size) return;
-    const panelKeyValid = panelKey === null || panelSections.some((s) => s.key === panelKey);
-    const lastValid = panelSections.some((s) => s.key === lastNonNullKey);
-    if (!panelKeyValid) panelKey = null;
-    if (!lastValid) lastNonNullKey = "global";
-    raceFixApplied = true;
-  });
+  // The persisted activeTab may point at a chart-contributed section
+  // (e.g. "embed") whose chart hasn't registered yet on first paint,
+  // or that doesn't exist in this session at all. The modal handles
+  // both cases by falling back to its first section (Global) when
+  // `activeTab` doesn't match any registered section — see the
+  // `resolvedKey` derivation in SettingsModal.svelte. The activeTab
+  // value itself is left alone so that once the relevant chart
+  // registers (mid-session) the modal swaps to the user's intended
+  // section.
 
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
@@ -852,57 +767,21 @@
   style:color-scheme={$colorScheme}
   bind:this={container}
 >
-  <!-- Horizontal flex root: icon strip + (optionally) settings
-       panel + resizer + main content column. The strip absorbs
-       all the controls that previously lived in the top toolbar
-       (layout selector, show/hide toggles, theme, settings gear);
-       there is no top toolbar anymore. -->
+  <!-- Horizontal flex root: icon strip + main content column. The
+       strip absorbs all the controls that previously lived in the
+       top toolbar (layout selector, show/hide toggles, theme,
+       settings gear); there is no top toolbar anymore. The settings
+       UI is a modal overlay (see SettingsModal below) rather than
+       an inline panel, so the row layout is just strip + main. -->
   <div
     class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
-    bind:clientWidth={containerWidth}
   >
     <AtlasIconStrip sections={stripSections} />
 
-    <!-- Inline settings panel. Width animates between 0 (closed)
-         and `settingsPanelWidth` (open). Stays mounted across
-         open/close so the contributed snippets keep their state
-         (the same reason the chart-snippet pattern is preserved). -->
-    <SettingsPanel
-      width={panelKey !== null ? settingsPanelWidth : 0}
-      onClose={() => (panelKey = null)}
-      sections={panelSections}
-      activeKey={panelKey ?? lastNonNullKey}
-      mcpStatus={mcpStatus}
-      version={EMBEDDING_ATLAS_VERSION}
-    />
-    <!-- Resizer is always mounted so it can fade alongside the
-         panel's width transition (no enter/exit DOM thrash). When
-         the panel is closed the wrapper collapses to 0 width and
-         pointer-events:none disables the drag area. -->
-    <div
-      class="flex-none"
-      style:width={panelKey !== null ? "4px" : "0px"}
-      style:opacity={panelKey !== null ? 1 : 0}
-      style:pointer-events={panelKey !== null ? "auto" : "none"}
-      style:transition="width 220ms ease-out, opacity 220ms ease-out"
-      aria-hidden={panelKey === null}
-    >
-      <Resizer
-        class="w-full h-full bg-slate-300 dark:bg-slate-600 hover:bg-blue-500 dark:hover:bg-blue-400 transition-colors"
-        axis="x"
-        scaler={1}
-        min={SETTINGS_PANEL_WIDTH_MIN}
-        max={Math.min(SETTINGS_PANEL_WIDTH_MAX, Math.max(SETTINGS_PANEL_WIDTH_MIN, containerWidth - 200))}
-        value={settingsPanelWidth}
-        onChange={(v) => (settingsPanelWidth = v)}
-      />
-    </div>
-
-    <!-- Main column: just content. min-w-0 so the column can
-         shrink when the settings panel grows; without it children
-         that ignore flex shrink (e.g. wide tables, fixed-width
-         Mosaic clients) would refuse to compress and push the
-         layout out past the container. -->
+    <!-- Main column: just content. min-w-0 so the column can shrink
+         when needed; without it children that ignore flex shrink
+         (wide tables, fixed-width Mosaic clients) would refuse to
+         compress and push the layout out past the container. -->
     <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
       <div class="flex-1 overflow-hidden h-full m-2">
         {#if initialized}
@@ -921,6 +800,20 @@
       </div>
     </div>
   </div>
+
+  <!-- Settings modal. Open/close is fully controlled by `settingsOpen`;
+       bits-ui's Dialog handles focus trap, ESC, click-outside, and
+       portals the content out of the flex row above. Active tab is
+       persisted via `activeTab`. -->
+  <SettingsModal
+    open={settingsOpen}
+    onOpenChange={(v) => (settingsOpen = v)}
+    sections={panelSections}
+    activeKey={activeTab}
+    onActiveKeyChange={(v) => (activeTab = v)}
+    mcpStatus={mcpStatus}
+    version={EMBEDDING_ATLAS_VERSION}
+  />
 
   {#if initialized}
     <CommandPalette open={paletteOpen} onClose={() => (paletteOpen = false)} commands={paletteCommands}>
