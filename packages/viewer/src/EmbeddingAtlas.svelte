@@ -151,13 +151,18 @@
     searcher: specifiedSearcher,
   });
 
+  // Hybrid is listed first when available so it becomes the default
+  // pick of the Select component (we also explicitly initialize
+  // searchModeStore to "hybrid" below when present).
   let searchModes = [
+    ...(searcher.hybridSearch != null ? ["hybrid"] : []),
     ...(searcher.fullTextSearch != null ? ["full-text"] : []),
     ...(searcher.vectorSearch != null ? ["vector"] : []),
     ...(searcher.nearestNeighbors != null ? ["neighbors"] : []),
   ];
 
   const searchModeOptions: Record<string, { value: string; label: string }> = {
+    hybrid: { value: "hybrid", label: "Hybrid" },
     "full-text": { value: "full-text", label: "Full Text" },
     vector: { value: "vector", label: "Vector" },
     neighbors: { value: "neighbors", label: "Neighbors" },
@@ -168,7 +173,11 @@
   // (which is mounted inside `Embedding.svelte`, on the other side
   // of LayoutView). Stores are the canonical Svelte way to share
   // mutable state across component boundaries.
-  let searchModeStore = writable<"full-text" | "vector">("full-text");
+  // Default mode is hybrid when available (lexical + semantic in one
+  // ranked list), else fall back to full-text.
+  let searchModeStore = writable<"hybrid" | "full-text" | "vector">(
+    searcher.hybridSearch != null ? "hybrid" : "full-text",
+  );
   let searchQueryStore = writable("");
   let searcherStatusStore = writable("");
   let searchResultVisibleStore = writable(false);
@@ -1055,7 +1064,8 @@
           options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
         />
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-          Full-text matches keywords; vector matches by semantic similarity to the embedding.
+          Hybrid combines keyword + semantic matching in one ranked list. Full-text matches keywords
+          only; vector matches by semantic similarity to the embedding.
         </div>
       </div>
     {/if}

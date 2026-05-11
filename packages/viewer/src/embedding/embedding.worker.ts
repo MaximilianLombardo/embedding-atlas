@@ -100,3 +100,45 @@ register("embedding.finalize", async (instance: string) => {
     return obj.finalize();
   }
 });
+
+// Session-style raw embedding for search. Different lifecycle from
+// the projection flow above: the model stays loaded across calls and
+// each `embed` returns raw N×dim vectors without UMAP. Used by
+// FullTextSearcher.hybridSearch.
+interface RawEmbedder {
+  (texts: string[]): Promise<{ data: Float32Array; dim: number }>;
+}
+
+let sessions = new Map<string, RawEmbedder>();
+
+register("embedding.session_new", async (options: { model: string }) => {
+  let id = new Date().getTime() + "-" + Math.random();
+  let extractor = await pipeline("feature-extraction", options.model, { device: "webgpu" });
+  sessions.set(id, async (texts: string[]) => {
+    let embedding = await extractor(texts, { pooling: "mean", normalize: true });
+    if (embedding.dims.length == 3) {
+      embedding = embedding.mean(1);
+    }
+    if (embedding.dims.length != 2 || embedding.dims[0] != texts.length) {
+      throw new Error("output embedding dimension mismatch");
+    }
+    let dim = embedding.dims[1] as number;
+    // Tensor.data is a DataArray union that includes BigInt64Array
+    // in the type but never returns it for feature-extraction
+    // pipelines (always Float32Array in practice). Cast to bypass
+    // the union; we always copy into a fresh Float32Array so the
+    // result is well-typed downstream.
+    return { data: new Float32Array(embedding.data as any), dim };
+  });
+  return id;
+});
+
+register("embedding.session_embed", async (instance: string, texts: string[]) => {
+  let fn = sessions.get(instance);
+  if (!fn) throw new Error("unknown embedding session: " + instance);
+  return await fn(texts);
+});
+
+register("embedding.session_dispose", async (instance: string) => {
+  sessions.delete(instance);
+});
