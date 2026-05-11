@@ -89,17 +89,21 @@
     <!-- Backdrop. Click → dismiss via Dialog's built-in
          interact-outside handling. backdrop-blur softens the
          underlying app, reinforcing the "focus" mode the user asked
-         for. z-40 keeps the modal layer above the strip + main but
-         below any host overlays that may need to be on top. -->
+         for. z-[150] sits above the embedding point tooltip (z-100,
+         from @embedding-atlas/component) and well below the dev
+         profiler overlay (z-9999), giving the modal absolute
+         precedence over any chart-level affordances when open. -->
     <Dialog.Overlay
-      class="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity"
+      class="fixed inset-0 z-[150] bg-slate-900/40 backdrop-blur-sm transition-opacity"
     />
     <!-- Modal content. Fixed-positioned center; size grows with
          viewport but caps. min-w/min-h prevent the sidebar from
          collapsing on narrow windows. overflow-hidden clips the
-         rounded corners; the body scrolls internally. -->
+         rounded corners; the body scrolls internally. z-[151] keeps
+         the content above its own overlay (z-[150]) and above
+         every chart-level layer. -->
     <Dialog.Content
-      class="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2
+      class="fixed left-1/2 top-1/2 z-[151] -translate-x-1/2 -translate-y-1/2
              flex flex-col overflow-hidden rounded-lg shadow-2xl
              bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
              border border-slate-300 dark:border-slate-700"
