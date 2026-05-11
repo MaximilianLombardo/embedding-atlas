@@ -5,7 +5,7 @@
   import * as SQL from "@uwdata/mosaic-sql";
   import { onMount, setContext } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { writable } from "svelte/store";
+  import { get, writable } from "svelte/store";
 
   import LayoutView from "./layouts/LayoutView.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
@@ -203,6 +203,13 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
+      // Race guard: the debounce timer trails the input by 500ms.
+      // If the user types then immediately clears, clearSearch() runs
+      // on the empty-input branch BUT the trailing timer still fires
+      // with the stale (non-empty) args — re-showing the dropdown
+      // even though the input is empty. Bail if the live query value
+      // is empty so the trailing timer has no effect.
+      if (get(searchQueryStore).trim() === "") return null;
       searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
