@@ -54,9 +54,26 @@
     mcpStatus?: string;
     /** Atlas version for the footer. */
     version: string;
+    /**
+     * Portal target. Defaults to document.body, but the host usually
+     * passes the `embedding-atlas-root` element so the modal lives
+     * inside the atlas's `.dark` class scope (Tailwind dark-mode
+     * variants are ancestor-based; portaling to `body` skips them).
+     * Also inherits font / color-scheme / any other root-scoped CSS.
+     */
+    portalTo?: HTMLElement;
   }
 
-  let { open, onOpenChange, sections, activeKey, onActiveKeyChange, mcpStatus, version }: Props = $props();
+  let {
+    open,
+    onOpenChange,
+    sections,
+    activeKey,
+    onActiveKeyChange,
+    mcpStatus,
+    version,
+    portalTo,
+  }: Props = $props();
 
   // If the persisted activeKey no longer maps to a section (e.g. a
   // chart that registered last session isn't mounted yet this
@@ -68,7 +85,7 @@
 </script>
 
 <Dialog.Root {open} {onOpenChange}>
-  <Dialog.Portal>
+  <Dialog.Portal to={portalTo ?? "body"}>
     <!-- Backdrop. Click → dismiss via Dialog's built-in
          interact-outside handling. backdrop-blur softens the
          underlying app, reinforcing the "focus" mode the user asked

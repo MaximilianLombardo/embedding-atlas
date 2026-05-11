@@ -79,7 +79,10 @@
     $userColorScheme = colorSchemeProp;
   });
 
-  let container: HTMLDivElement;
+  // `bind:this` updates this on mount; the settings modal's portal
+  // target reads it, so it needs to be reactive ($state.raw is fine —
+  // we only care about reference identity, not nested reactivity).
+  let container = $state.raw<HTMLDivElement | undefined>(undefined);
 
   let initialized = $state(false);
 
@@ -731,7 +734,11 @@
           return chartDelegates;
         },
         get container() {
-          return container;
+          // Non-null assert: provideModelContext runs in onMount, which
+          // fires after the bind:this has set `container` to the
+          // mounted div. The optional type is only there to satisfy
+          // svelte-check before mount.
+          return container!;
         },
         get columnStyles() {
           return columnStyles;
@@ -804,7 +811,10 @@
   <!-- Settings modal. Open/close is fully controlled by `settingsOpen`;
        bits-ui's Dialog handles focus trap, ESC, click-outside, and
        portals the content out of the flex row above. Active tab is
-       persisted via `activeTab`. -->
+       persisted via `activeTab`. Portal target is the atlas root so
+       the modal lives inside the `.dark` class scope — Tailwind dark
+       variants are ancestor-based and would otherwise be skipped if
+       the modal portaled to document.body. -->
   <SettingsModal
     open={settingsOpen}
     onOpenChange={(v) => (settingsOpen = v)}
@@ -813,6 +823,7 @@
     onActiveKeyChange={(v) => (activeTab = v)}
     mcpStatus={mcpStatus}
     version={EMBEDDING_ATLAS_VERSION}
+    portalTo={container}
   />
 
   {#if initialized}
