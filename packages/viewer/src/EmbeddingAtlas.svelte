@@ -509,9 +509,17 @@
     if (listState.showTable === false) {
       layoutStates = { ...layoutStates, list: { ...listState, showTable: true } };
     }
+    // Highlight the row so the user has a visual anchor for where the
+    // scroll landed. Without this the scroll happens silently and
+    // looks like the button "didn't work" — particularly when the
+    // drawer is still open over part of the table.
+    chartContext.highlight.set([id]);
     revealNonce += 1;
     revealTicketStore.set({ id, nonce: revealNonce });
-    detailRowStore.set(null);
+    // Intentionally NOT closing the drawer here: the panel only covers
+    // the right portion of the viewport, the table is still visible
+    // to the left, and keeping the drawer open lets the user see both
+    // the row's highlight AND its detail until they explicitly dismiss.
   }
 
   // svelte-ignore state_referenced_locally

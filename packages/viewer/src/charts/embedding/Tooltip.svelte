@@ -4,7 +4,7 @@
 
   import TooltipContent from "../../views/TooltipContent.svelte";
 
-  import { IconRight, IconSearch } from "../../assets/icons.js";
+  import { IconRight, IconSearch, IconTable } from "../../assets/icons.js";
   import type { ColumnStyle } from "../../renderers/types.js";
 
   interface Props {
@@ -13,11 +13,14 @@
     colorScheme: "light" | "dark";
     onNearestNeighborSearch?: (id: any) => void;
     onOpenDetail?: (point: DataPoint) => void;
+    onShowInTable?: (id: any) => void;
   }
 
-  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch, onOpenDetail }: Props = $props();
+  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch, onOpenDetail, onShowInTable }: Props = $props();
 
-  let hasActions = $derived(onNearestNeighborSearch != null || onOpenDetail != null);
+  let hasActions = $derived(
+    onNearestNeighborSearch != null || onOpenDetail != null || onShowInTable != null,
+  );
 
   const pillClass =
     "flex items-center gap-1 px-2.5 py-1 rounded-full border border-slate-300 dark:border-slate-600 " +
@@ -56,6 +59,17 @@
               >
                 <IconRight class="w-3.5 h-3.5" />
                 Open detail
+              </button>
+            {/if}
+            {#if onShowInTable}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onShowInTable?.(tooltip.identifier)}
+                title="Scroll the table to this row"
+              >
+                <IconTable class="w-3.5 h-3.5" />
+                Show in table
               </button>
             {/if}
           </div>

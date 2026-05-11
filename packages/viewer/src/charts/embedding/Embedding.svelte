@@ -306,6 +306,12 @@
               tooltip = null;
             }
           : null,
+        onShowInTable: context.revealRow
+          ? (id: any) => {
+              context.revealRow?.(id);
+              tooltip = null;
+            }
+          : null,
       },
     }}
     customOverlay={{
