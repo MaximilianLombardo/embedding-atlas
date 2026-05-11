@@ -141,36 +141,35 @@
   {#if !isMobileLayout}
     <!-- Desktop layout -->
     <!-- Left side: embedding / table. Both panes are kept mounted
-         across show/hide (Mosaic + WebGL on the embedding side, and
-         @tanstack/table-core + virtualizer + Mosaic clients on the
-         table side, both pay a ~250 ms setup cost on first appearance
-         — re-mounting on every toggle showed up as a dropped frame
-         at the start of the slide-in). The outer `{#if hasEmbedding
-         || hasTable}` gate only short-circuits the case where the
-         user has hidden BOTH panes; in that case the entire left
-         column collapses and the chart panel fills the page.
+         across show/hide so the expensive setup work (Mosaic + WebGL
+         on the embedding side; table-core + virtualizer + filter
+         popovers on the table side) is paid once on first appearance,
+         not on every toggle.
 
-         Within the left column, each pane uses a two-layer wrapper
-         to animate its show/hide:
+         Both panes use explicit px heights so CSS transitions have
+         interpolatable endpoints in every direction (browsers don't
+         animate from `auto`/flex-determined to a fixed value). The
+         heights are computed so they always sum to containerHeight:
 
-           outer → animates height between 0 and the pane's intended
-                   size, overflow:hidden so content beyond is clipped
-           inner → fixed at the pane's intended size so ResizeObserver
-                   inside the embedding canvas / virtualizer doesn't
-                   fire mid-animation (only paint, no re-measure)
+           hasEmbedding + hasTable:   emb = cH − tH − 8, table = tH
+           hasEmbedding only:         emb = cH, table = 0
+           hasTable only:             emb = 0, table = cH
 
-         When BOTH panes are visible the intended sizes are
-         embedding = containerHeight − tableHeight − 8 (resizer)
-         table     = tableHeight (user-controlled via resizer)
-
-         When only one pane is visible, that pane's intended size is
-         containerHeight (it fills the column).
-
-         As the user toggles one pane while the other stays visible,
-         both intended-sizes update simultaneously, so both panes'
-         outer heights animate in lockstep — the hidden pane shrinks
-         to 0 over 300 ms while the visible pane grows to fill its
-         freed space, with no end-of-transition snap. -->
+         Inner wrappers use `h-full` so the chart content follows the
+         outer's currently-animated height every frame, instead of
+         snapping to a new "stable size" the moment the OTHER pane's
+         visibility flips. The previous "fixed inner height" was
+         supposed to keep the embedding canvas / table virtualizer
+         from re-measuring during a transition, but because that
+         fixed value depended on `hasEmbedding` / `hasTable`, any
+         cross-pane toggle made the inner SNAP at frame 0 — that's
+         what produced the jitter the user reported on
+         hide-embedding-while-table-visible and hide-table-while-
+         embedding-visible. Letting the inner track the animated
+         outer trades a tiny per-frame re-render (cheap: WebGL
+         viewport change + virtualizer range recompute) for visually
+         smooth motion that matches the chart-panel/embedding
+         interaction the user pointed at as the target. -->
     {#if hasEmbedding || hasTable}
       <div class="flex-1 flex flex-col overflow-hidden">
         {#if sections.embedding.length > 0}
@@ -180,7 +179,7 @@
             style:height="{hasEmbedding ? embH : 0}px"
             style:transition="height 300ms ease-in-out"
           >
-            <div class="flex flex-row gap-2 overflow-hidden" style:height="{embH}px">
+            <div class="flex flex-row gap-2 overflow-hidden h-full">
               {#each sections.embedding as id (id)}
                 <div class="flex-1 overflow-hidden rounded-md">
                   {@render chartView({ id: id, width: "container", height: "container" })}
@@ -189,11 +188,9 @@
             </div>
           </div>
         {/if}
-        <!-- Resizer wrapper: always mounted; height collapses to 0
-             when either pane is hidden so the 8 px drag handle fades
-             in/out alongside the pane animations rather than
-             popping. The Resizer component itself stays at h-2 so
-             its hit area is preserved when fully visible. -->
+        <!-- Resizer: always mounted; height collapses to 0 when
+             either pane is hidden so the 8 px drag handle fades
+             alongside the pane animations rather than popping. -->
         <div
           class="flex-none overflow-hidden"
           style:height="{hasEmbedding && hasTable ? 8 : 0}px"
@@ -216,10 +213,7 @@
             style:height="{hasTable ? tblH : 0}px"
             style:transition="height 300ms ease-in-out"
           >
-            <div
-              class="flex flex-col gap-1 overflow-hidden min-h-0"
-              style:height="{tblH}px"
-            >
+            <div class="flex flex-col gap-1 overflow-hidden min-h-0 h-full">
               {#if chatAvailable}
                 <div class="flex-none flex items-center gap-2 px-1">
                   <TableTabBar value={tableTab} onChange={setTableTab} />
