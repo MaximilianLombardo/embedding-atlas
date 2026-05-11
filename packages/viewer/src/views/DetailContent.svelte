@@ -46,8 +46,15 @@
     if (columnStyles[key]?.display === "hidden") return true;
     if (key.startsWith("__")) return true;
     if (key === "embedding") return true;
-    if (/^(umap_|cluster|x_|y_)/i.test(key)) return true;
-    if (key === "cluster_id" || key === "umap_x" || key === "umap_y") return true;
+    // Projection coords from the embedding pipeline — internal to the
+    // viewer's geometry, not user-facing data. Matches both `umap_x` /
+    // `umap_y` and the renamed `projection_x` / `projection_y` shape.
+    if (/^(umap|projection)[_-]?[xy]$/i.test(key)) return true;
+    // Cluster ids and similar internal aggregator output.
+    if (/^cluster(_id)?$/i.test(key)) return true;
+    // File-path columns — system metadata that doesn't tell the user
+    // anything about the row itself (e.g. file_name: /Users/.../atlas.parquet).
+    if (/^(file_?name|file_?path|filename|filepath|path|source_?file)$/i.test(key)) return true;
     // Drop *_str when a corresponding array column exists (e.g.
     // mesh_terms_str shadows mesh_terms). Keep the array; the chips
     // render better than the joined string.
@@ -118,6 +125,20 @@
 
   // ---- Per-type rendering helpers ----------------------------------
 
+  // Format a metadata value, opting out of toLocaleString's thousands
+  // separator for year-shaped numbers (column named "year"/"yr", or
+  // 4-digit integer in a plausible year range). "2,022" reads wrong;
+  // bare "2022" is what users expect.
+  function formatMetadataValue(key: string, value: any): string | null {
+    if (value == null) return null;
+    if (typeof value === "number") {
+      const isYearColumn = /^(year|yr|publication_year|pub_year)$/i.test(key);
+      const isYearShaped = Number.isInteger(value) && value >= 1500 && value <= 2200;
+      if (isYearColumn || isYearShaped) return String(value);
+    }
+    return null; // Fall through to ContentRenderer's default formatting.
+  }
+
   function linkForIdentifier(key: string, value: any): string | null {
     if (value == null) return null;
     const s = String(value).trim();
@@ -150,11 +171,34 @@
     if (expandedContent.has(key)) expandedContent.delete(key);
     else expandedContent.add(key);
   }
+
+  // Tag-row cap: long chip lists (concepts can be 100+) wreck the
+  // drawer's vertical rhythm. Default to a small visible chunk per
+  // row with an inline Show-more toggle, the same UX as content
+  // sections.
+  const TAG_PREVIEW_CAP = 15;
+  let expandedTags = $state(new SvelteSet<string>());
+  function isTagExpanded(key: string): boolean {
+    return expandedTags.has(key);
+  }
+  function toggleTag(key: string) {
+    if (expandedTags.has(key)) expandedTags.delete(key);
+    else expandedTags.add(key);
+  }
 </script>
 
 <div class="flex flex-col gap-4">
   {#if headerKey != null}
-    <div class="text-lg font-semibold leading-snug text-slate-900 dark:text-slate-100 break-words">
+    <!-- Title: break on whitespace only, not mid-word. The default
+         `break-words` aggressively breaks any long string including
+         hyphenated phrases (e.g. "deep learning-based"), which reads
+         ugly. `overflow-wrap: anywhere` falls back to character-break
+         only when a single word truly exceeds the line width. -->
+    <div
+      class="text-lg font-semibold leading-snug text-slate-900 dark:text-slate-100"
+      style:overflow-wrap="anywhere"
+      style:word-break="normal"
+    >
       <ContentRenderer value={values[headerKey]} style={columnStyles[headerKey]} />
     </div>
   {/if}
@@ -162,8 +206,8 @@
   {#each GROUP_ORDER as group}
     {@const keys = grouped[group]}
     {#if keys.length > 0}
-      <section class="flex flex-col gap-2 pt-3 border-t border-slate-200 dark:border-slate-700 first:border-t-0 first:pt-0">
-        <div class="text-[10px] font-semibold tracking-widest uppercase text-slate-400 dark:text-slate-500">
+      <section class="flex flex-col gap-2 pt-4 border-t border-slate-300/70 dark:border-slate-700 first:border-t-0 first:pt-0">
+        <div class="text-[10px] font-semibold tracking-widest uppercase text-slate-500 dark:text-slate-400">
           {GROUP_LABEL[group]}
         </div>
 
@@ -198,9 +242,14 @@
           <div class="grid grid-cols-[max-content,1fr] gap-x-3 gap-y-1 text-sm">
             {#each keys as key}
               {@const value = values[key]}
+              {@const yearOverride = formatMetadataValue(key, value)}
               <div class="text-slate-500 dark:text-slate-400">{labelOf(key)}</div>
               <div class="text-slate-800 dark:text-slate-200 tabular-nums break-words">
-                <ContentRenderer value={value} style={columnStyles[key]} />
+                {#if yearOverride != null}
+                  {yearOverride}
+                {:else}
+                  <ContentRenderer value={value} style={columnStyles[key]} />
+                {/if}
               </div>
             {/each}
           </div>
@@ -208,10 +257,13 @@
           <div class="flex flex-col gap-2">
             {#each keys as key}
               {@const value = values[key] as any[]}
+              {@const expanded = isTagExpanded(key)}
+              {@const visible = expanded ? value : value.slice(0, TAG_PREVIEW_CAP)}
+              {@const overflow = Math.max(0, value.length - visible.length)}
               <div class="flex flex-col gap-1">
                 <div class="text-xs text-slate-500 dark:text-slate-400">{labelOf(key)}</div>
-                <div class="flex flex-row gap-1 flex-wrap">
-                  {#each value as item}
+                <div class="flex flex-row gap-1 flex-wrap items-center">
+                  {#each visible as item}
                     <div
                       class="px-1.5 py-0.5 text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 rounded"
                       title={stringify(item)}
@@ -219,6 +271,23 @@
                       {stringify(item)}
                     </div>
                   {/each}
+                  {#if overflow > 0}
+                    <button
+                      type="button"
+                      class="px-1.5 py-0.5 text-xs text-blue-700 dark:text-blue-300 hover:underline"
+                      onclick={() => toggleTag(key)}
+                    >
+                      +{overflow} more
+                    </button>
+                  {:else if expanded && value.length > TAG_PREVIEW_CAP}
+                    <button
+                      type="button"
+                      class="px-1.5 py-0.5 text-xs text-blue-700 dark:text-blue-300 hover:underline"
+                      onclick={() => toggleTag(key)}
+                    >
+                      Show less
+                    </button>
+                  {/if}
                 </div>
               </div>
             {/each}
@@ -273,7 +342,7 @@
   {/each}
 
   {#if hiddenKeys.length > 0}
-    <div class="pt-3 border-t border-slate-200 dark:border-slate-700">
+    <div class="pt-4 border-t border-slate-300/70 dark:border-slate-700">
       <button
         type="button"
         class="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
