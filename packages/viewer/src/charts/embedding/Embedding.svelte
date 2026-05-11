@@ -350,7 +350,7 @@
       searchResult={context.searchResult as any}
       searcherStatus={$searcherStatusStore}
       visible={$searchResultVisibleStore}
-      onResultClick={(item) => context.highlight.set(item.id)}
+      onResultClick={(item) => context.highlight.set([item.id])}
       onClear={() => {
         context.searchQuery!.set("");
         context.searchResultVisible!.set(false);

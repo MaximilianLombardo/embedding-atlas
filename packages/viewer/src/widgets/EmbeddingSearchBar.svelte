@@ -144,12 +144,20 @@
     class="flex items-center gap-1 h-8 px-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm shadow-sm w-72"
   >
     <IconSearch class="w-4 h-4 flex-none text-slate-400 dark:text-slate-500" />
+    <!-- type="search" gives us the right semantics + IME behavior, but
+         WebKit adds a native clear button when the input has content
+         that visually duplicates our custom X next to it. The custom
+         X is positioned + styled to match the rest of the bar; suppress
+         the native one via the vendor-prefixed search-cancel-button
+         pseudo-element. -->
     <input
       type="search"
       placeholder="Search..."
       value={searchQuery}
       oninput={(e) => onSearchQueryChange((e.target as HTMLInputElement).value)}
-      class="flex-1 min-w-0 bg-transparent outline-none text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+      class="flex-1 min-w-0 bg-transparent outline-none text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500
+             [&::-webkit-search-cancel-button]:appearance-none
+             [&::-webkit-search-decoration]:appearance-none"
     />
     {#if searchQuery !== ""}
       <button
