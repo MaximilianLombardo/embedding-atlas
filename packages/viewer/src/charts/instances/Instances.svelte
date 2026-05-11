@@ -28,14 +28,12 @@
   import { untrack } from "svelte";
 
   import ActionButton from "../../widgets/ActionButton.svelte";
-  import SegmentedControl from "../../widgets/SegmentedControl.svelte";
-  import Cards from "./Cards.svelte";
   import ColumnControls from "./ColumnControls.svelte";
   import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
 
-  import { IconCardView, IconDownload, IconTableSettings, IconTableView } from "../../assets/icons.js";
+  import { IconDownload, IconTableSettings } from "../../assets/icons.js";
   import { predicateToString } from "../../utils/database.js";
   import { downloadBuffer } from "../../utils/download.js";
   import { exportMosaicSelection } from "../../utils/mosaic_exporter.js";
@@ -69,15 +67,13 @@
   let highlight = context.highlight;
   let isolatedHighlight = isolatedWritable(highlight);
 
-  let viewMode = $derived((spec.viewMode ?? "table") as "table" | "cards");
-
   // pageSize is repurposed (D2) as a sliding-window size hint. If unset,
   // we autocompute from the typical viewport later when the loader
   // initializes; the constant here is a stable default for spec
   // round-tripping.
   let windowSize = $derived(spec.pageSize ?? 400);
 
-  let contentView = $state.raw<Table | Cards | undefined>(undefined);
+  let contentView = $state.raw<Table | undefined>(undefined);
 
   // Default column widths: seeded by WindowLoader during prepare from a
   // 10-row sample. Local state keyed by column name; passed to Table to
@@ -366,21 +362,12 @@
   class="w-full flex flex-col overflow-hidden rounded-md bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
   style:height={`${height ?? spec.defaultHeight ?? 500}px`}
 >
+  <!-- Toolbar: sort control on the left, row count on the right.
+       Column controls (visibility / order / pinning) and CSV export
+       live in the settings modal's Table tab via the registerDelegate
+       call below — there's only one home for chart-scoped config. -->
   <div class="flex items-center justify-between px-2 py-0.5 border-b border-slate-200 dark:border-slate-700 gap-4">
     <div class="flex items-center gap-4 flex-shrink-0">
-      <SegmentedControl
-        value={viewMode}
-        onChange={(v) => onSpecChange({ viewMode: v as "table" | "cards" })}
-        options={[
-          { value: "table", icon: IconTableView, title: "Table view" },
-          { value: "cards", icon: IconCardView, title: "Card view" },
-        ]}
-      />
-      <!-- Column controls (visibility / order / pinning) + CSV export
-           are registered as the "Table" tab of the settings modal via
-           `registerDelegate` below. The dedicated inline popup-button
-           that used to live here was removed when the modal became
-           the single home for chart-scoped configuration. -->
       <SortOrderControl value={spec.sort} onChange={(value) => onSpecChange({ sort: value })} />
     </div>
     {#if loader}
@@ -392,39 +379,28 @@
 
   <div class="flex-1 min-h-0 overflow-hidden">
     {#if loader && loader.columns.length > 0}
-      {#if viewMode === "table"}
-        <Table
-          bind:this={contentView}
-          loader={loader}
-          columnDescs={context.columns}
-          columnStyles={columnStyles}
-          defaultColumnWidths={defaultColumnWidths}
-          highlight={$highlight}
-          sort={spec.sort}
-          tableName={context.table}
-          bind:columnState={columnState}
-          filterContext={spec.query == null ? {
-            coordinator: context.coordinator,
-            table: context.table,
-            filter: context.filter,
-            columnFilters,
-            sourceFor,
-            onChange: handleColumnFilterChange,
-          } : undefined}
-          onRowClick={handleRowClick}
-          onRowDoubleClick={handleRowDoubleClick}
-          onSortChange={(value) => onSpecChange({ sort: value })}
-        />
-      {:else}
-        <Cards
-          bind:this={contentView}
-          loader={loader}
-          columnStyles={columnStyles}
-          highlight={$highlight}
-          cardTemplate={spec.cardTemplate}
-          onRowClick={handleRowClick}
-        />
-      {/if}
+      <Table
+        bind:this={contentView}
+        loader={loader}
+        columnDescs={context.columns}
+        columnStyles={columnStyles}
+        defaultColumnWidths={defaultColumnWidths}
+        highlight={$highlight}
+        sort={spec.sort}
+        tableName={context.table}
+        bind:columnState={columnState}
+        filterContext={spec.query == null ? {
+          coordinator: context.coordinator,
+          table: context.table,
+          filter: context.filter,
+          columnFilters,
+          sourceFor,
+          onChange: handleColumnFilterChange,
+        } : undefined}
+        onRowClick={handleRowClick}
+        onRowDoubleClick={handleRowDoubleClick}
+        onSortChange={(value) => onSpecChange({ sort: value })}
+      />
     {:else}
       <div class="flex items-center justify-center h-full">
         <div class="text-slate-500 dark:text-slate-400">Loading...</div>

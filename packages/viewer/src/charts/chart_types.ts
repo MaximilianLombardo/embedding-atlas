@@ -406,35 +406,8 @@ registerChartBuilder({
     return {
       type: "instances",
       title: "Table",
-      viewMode: "table",
       query: query != null && query.trim() != "" ? query : undefined,
     };
   },
 });
 
-registerChartBuilder({
-  icon: "chart-cards",
-  description: "Create a card view with pagination",
-  preview: false,
-  ui: [
-    {
-      label: "SQL query for the card view (optional)",
-      details:
-        "Leave empty to show the (filtered) dataset, use $table and $filter to refer to the data table and filter predicate respectively.",
-      code: { key: "query", language: "sql" },
-    },
-    {
-      label: "HTML template for the cards (optional)",
-      code: { key: "template", language: "" },
-    },
-  ] as const,
-  create: ({ query, template }): InstancesSpec | undefined => {
-    return {
-      type: "instances",
-      title: "Cards",
-      viewMode: "cards",
-      query: query != null && query.trim() != "" ? query : undefined,
-      cardTemplate: template != null && template.trim() != "" ? template : undefined,
-    };
-  },
-});
