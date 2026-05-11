@@ -10,6 +10,16 @@
     min: number;
     max: number;
     onChange: (value: number) => void;
+    /**
+     * Optional drag-lifecycle callbacks. Consumers use these to suppress
+     * CSS transitions on the resized dimension during a drag — without
+     * them, a `transition: height 300ms` rule designed for show/hide
+     * toggles makes the dragged element chase the mouse with a 300 ms
+     * lag because each new value spawns a fresh tween. The callbacks
+     * also fire on touch + keyboard-driven drags via interactionHandler.
+     */
+    onDragStart?: () => void;
+    onDragEnd?: () => void;
   }
 
   let props: Props = $props();
@@ -18,6 +28,7 @@
     let x1 = e1.pageX;
     let y1 = e1.pageY;
     let v0 = props.value;
+    props.onDragStart?.();
     return {
       move: (e2: CursorValue) => {
         let dx = e2.pageX - x1;
@@ -26,6 +37,12 @@
         if (v1 < props.min) v1 = props.min;
         if (v1 > props.max) v1 = props.max;
         props.onChange(v1);
+      },
+      up: () => {
+        props.onDragEnd?.();
+      },
+      cancel: () => {
+        props.onDragEnd?.();
       },
     };
   }

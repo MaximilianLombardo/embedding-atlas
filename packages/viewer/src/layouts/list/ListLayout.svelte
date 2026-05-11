@@ -70,6 +70,16 @@
   let panelWidth = $state(400);
   let panelContainerWidth = $state(400);
 
+  // True while the user is actively dragging EITHER the embedding/table
+  // resizer or the left/right (main/charts) resizer. The pane outers'
+  // `transition: height 300 ms` looks great for the show/hide toggles
+  // but produces a 300 ms lag during drag — each pointermove sets a
+  // new target which the browser starts a fresh tween toward, so the
+  // pane chases the cursor instead of tracking it. We suppress the
+  // CSS transition while `isResizing` is true. The same flag covers
+  // both resizers because either drag wants instant pane updates.
+  let isResizing = $state(false);
+
   let sections = $derived.by(deepMemo(() => getSections(charts, layoutState)));
 
   let isMobileLayout = $derived(containerWidth < 500);
@@ -177,7 +187,7 @@
           <div
             class="overflow-hidden flex-none"
             style:height="{hasEmbedding ? embH : 0}px"
-            style:transition="height 300ms ease-in-out"
+            style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
           >
             <div class="flex flex-row gap-2 overflow-hidden h-full">
               {#each sections.embedding as id (id)}
@@ -194,7 +204,7 @@
         <div
           class="flex-none overflow-hidden"
           style:height="{hasEmbedding && hasTable ? 8 : 0}px"
-          style:transition="height 300ms ease-in-out"
+          style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
         >
           <Resizer
             class="h-2 w-full"
@@ -204,6 +214,8 @@
             scaler={-1}
             value={tableHeight}
             onChange={(v) => (tableHeight = v)}
+            onDragStart={() => (isResizing = true)}
+            onDragEnd={() => (isResizing = false)}
           />
         </div>
         {#if sections.table.length > 0}
@@ -245,7 +257,7 @@
           <div
             class="overflow-clip flex-none"
             style:height="{hasTable ? tblH : 0}px"
-            style:transition="height 300ms ease-in-out"
+            style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
           >
             <div
               class="flex flex-col gap-1 overflow-clip min-h-0"
@@ -290,6 +302,8 @@
         scaler={-1}
         value={panelWidth}
         onChange={(v) => (panelWidth = v)}
+        onDragStart={() => (isResizing = true)}
+        onDragEnd={() => (isResizing = false)}
       />
     {/if}
     <!-- Right side: charts -->
