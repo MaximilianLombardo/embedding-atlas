@@ -140,21 +140,67 @@
 <div class="w-full h-full flex flex-row" bind:clientWidth={containerWidth} bind:clientHeight={containerHeight}>
   {#if !isMobileLayout}
     <!-- Desktop layout -->
-    <!-- Left side: embedding / table -->
+    <!-- Left side: embedding / table. Both panes are kept mounted
+         across show/hide (Mosaic + WebGL on the embedding side, and
+         @tanstack/table-core + virtualizer + Mosaic clients on the
+         table side, both pay a ~250 ms setup cost on first appearance
+         — re-mounting on every toggle showed up as a dropped frame
+         at the start of the slide-in). The outer `{#if hasEmbedding
+         || hasTable}` gate only short-circuits the case where the
+         user has hidden BOTH panes; in that case the entire left
+         column collapses and the chart panel fills the page.
+
+         Within the left column, each pane uses a two-layer wrapper
+         to animate its show/hide:
+
+           outer → animates height between 0 and the pane's intended
+                   size, overflow:hidden so content beyond is clipped
+           inner → fixed at the pane's intended size so ResizeObserver
+                   inside the embedding canvas / virtualizer doesn't
+                   fire mid-animation (only paint, no re-measure)
+
+         When BOTH panes are visible the intended sizes are
+         embedding = containerHeight − tableHeight − 8 (resizer)
+         table     = tableHeight (user-controlled via resizer)
+
+         When only one pane is visible, that pane's intended size is
+         containerHeight (it fills the column).
+
+         As the user toggles one pane while the other stays visible,
+         both intended-sizes update simultaneously, so both panes'
+         outer heights animate in lockstep — the hidden pane shrinks
+         to 0 over 300 ms while the visible pane grows to fill its
+         freed space, with no end-of-transition snap. -->
     {#if hasEmbedding || hasTable}
       <div class="flex-1 flex flex-col overflow-hidden">
-        {#if hasEmbedding}
-          <div class="flex flex-row gap-2 flex-1 overflow-hidden">
-            {#each sections.embedding as id (id)}
-              <div class="flex-1 overflow-hidden rounded-md">
-                {@render chartView({ id: id, width: "container", height: "container" })}
-              </div>
-            {/each}
+        {#if sections.embedding.length > 0}
+          {@const embH = hasTable ? Math.max(0, containerHeight - tableHeight - 8) : containerHeight}
+          <div
+            class="overflow-hidden flex-none"
+            style:height="{hasEmbedding ? embH : 0}px"
+            style:transition="height 300ms ease-in-out"
+          >
+            <div class="flex flex-row gap-2 overflow-hidden" style:height="{embH}px">
+              {#each sections.embedding as id (id)}
+                <div class="flex-1 overflow-hidden rounded-md">
+                  {@render chartView({ id: id, width: "container", height: "container" })}
+                </div>
+              {/each}
+            </div>
           </div>
         {/if}
-        {#if hasEmbedding && hasTable}
+        <!-- Resizer wrapper: always mounted; height collapses to 0
+             when either pane is hidden so the 8 px drag handle fades
+             in/out alongside the pane animations rather than
+             popping. The Resizer component itself stays at h-2 so
+             its hit area is preserved when fully visible. -->
+        <div
+          class="flex-none overflow-hidden"
+          style:height="{hasEmbedding && hasTable ? 8 : 0}px"
+          style:transition="height 300ms ease-in-out"
+        >
           <Resizer
-            class="h-2 flex-none"
+            class="h-2 w-full"
             axis="y"
             min={100}
             max={containerHeight - 100}
@@ -162,75 +208,46 @@
             value={tableHeight}
             onChange={(v) => (tableHeight = v)}
           />
-        {/if}
-        <!--
-          Table panel: kept mounted across hide/show so the
-          @tanstack/table-core + virtualizer + Mosaic clients pay
-          their setup cost once, on first appearance, instead of
-          on every toggle. The previous `{#if hasTable}` +
-          `transition:slide` mounted/unmounted the chart on every
-          toggle; with the table virtualization rebuild that mount
-          is a ~250 ms synchronous burst (createSvelteTable over
-          ~40 columns, HeaderFilterPopover per column, virtualizer
-          init), which showed up as a single dropped frame at the
-          start of the slide-in animation.
-
-          Two-layer wrapper trick (only when an embedding sits
-          above; the no-embedding case has no toggle reachable
-          from the toolbar):
-
-            outer  → animates height 0 ↔ tableHeight, overflow:hidden
-            inner  → always tableHeight tall
-
-          Animating the *outer* height does the visual reveal;
-          keeping the *inner* at a stable height keeps the chart's
-          scroll element a stable size throughout the transition.
-          The @tanstack/svelte-virtual ResizeObserver only fires
-          on actual content-rect changes, so it never re-computes
-          its visible range mid-animation and never reconciles
-          new <tr>s while the user is staring at the slide-in.
-          All visible rows are already rendered on first show; the
-          only work during the animation is paint.
-
-          When `sections.table.length === 0` the {#each} renders
-          nothing, so no chart is mounted in that case either.
-        -->
-        <div
-          class="overflow-hidden {hasEmbedding ? 'flex-none' : 'flex-1'}"
-          style:height={hasEmbedding ? (hasTable ? `${tableHeight}px` : "0px") : null}
-          style:transition={hasEmbedding ? "height 300ms ease-in-out" : null}
-        >
-          <div
-            class="flex flex-col gap-1 overflow-hidden min-h-0"
-            style:height={hasEmbedding ? `${tableHeight}px` : "100%"}
-          >
-            {#if chatAvailable}
-              <div class="flex-none flex items-center gap-2 px-1">
-                <TableTabBar value={tableTab} onChange={setTableTab} />
-              </div>
-            {/if}
-            {#if chatAvailable && tableTab === "chat" && chat != null}
-              <div class="flex-1 overflow-hidden rounded-md min-h-0">
-                <ChatPanel
-                  coordinator={context.coordinator}
-                  table={context.table}
-                  filter={context.filter}
-                  highlight={context.highlight}
-                  chartContext={context}
-                  onSaveChart={saveInlineChartToPanel}
-                />
-              </div>
-            {:else}
-              <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
-                {#each sections.table as id (id)}
-                  <div class="flex-1 overflow-hidden rounded-md">
-                    {@render chartView({ id: id, width: "container", height: "container" })}
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
         </div>
+        {#if sections.table.length > 0}
+          {@const tblH = hasEmbedding ? tableHeight : containerHeight}
+          <div
+            class="overflow-hidden flex-none"
+            style:height="{hasTable ? tblH : 0}px"
+            style:transition="height 300ms ease-in-out"
+          >
+            <div
+              class="flex flex-col gap-1 overflow-hidden min-h-0"
+              style:height="{tblH}px"
+            >
+              {#if chatAvailable}
+                <div class="flex-none flex items-center gap-2 px-1">
+                  <TableTabBar value={tableTab} onChange={setTableTab} />
+                </div>
+              {/if}
+              {#if chatAvailable && tableTab === "chat" && chat != null}
+                <div class="flex-1 overflow-hidden rounded-md min-h-0">
+                  <ChatPanel
+                    coordinator={context.coordinator}
+                    table={context.table}
+                    filter={context.filter}
+                    highlight={context.highlight}
+                    chartContext={context}
+                    onSaveChart={saveInlineChartToPanel}
+                  />
+                </div>
+              {:else}
+                <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
+                  {#each sections.table as id (id)}
+                    <div class="flex-1 overflow-hidden rounded-md">
+                      {@render chartView({ id: id, width: "container", height: "container" })}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
     {#if (hasEmbedding || hasTable) && hasChart}
