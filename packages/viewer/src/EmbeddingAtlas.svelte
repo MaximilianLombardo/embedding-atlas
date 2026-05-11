@@ -5,7 +5,7 @@
   import * as SQL from "@uwdata/mosaic-sql";
   import { onMount, setContext } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { writable } from "svelte/store";
+  import { get, writable } from "svelte/store";
 
   import LayoutView from "./layouts/LayoutView.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
@@ -151,13 +151,18 @@
     searcher: specifiedSearcher,
   });
 
+  // Hybrid is listed first when available so it becomes the default
+  // pick of the Select component (we also explicitly initialize
+  // searchModeStore to "hybrid" below when present).
   let searchModes = [
+    ...(searcher.hybridSearch != null ? ["hybrid"] : []),
     ...(searcher.fullTextSearch != null ? ["full-text"] : []),
     ...(searcher.vectorSearch != null ? ["vector"] : []),
     ...(searcher.nearestNeighbors != null ? ["neighbors"] : []),
   ];
 
   const searchModeOptions: Record<string, { value: string; label: string }> = {
+    hybrid: { value: "hybrid", label: "Hybrid" },
     "full-text": { value: "full-text", label: "Full Text" },
     vector: { value: "vector", label: "Vector" },
     neighbors: { value: "neighbors", label: "Neighbors" },
@@ -168,7 +173,11 @@
   // (which is mounted inside `Embedding.svelte`, on the other side
   // of LayoutView). Stores are the canonical Svelte way to share
   // mutable state across component boundaries.
-  let searchModeStore = writable<"full-text" | "vector">("full-text");
+  // Default mode is hybrid when available (lexical + semantic in one
+  // ranked list), else fall back to full-text.
+  let searchModeStore = writable<"hybrid" | "full-text" | "vector">(
+    searcher.hybridSearch != null ? "hybrid" : "full-text",
+  );
   let searchQueryStore = writable("");
   let searcherStatusStore = writable("");
   let searchResultVisibleStore = writable(false);
@@ -194,6 +203,13 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
+      // Race guard: the debounce timer trails the input by 500ms.
+      // If the user types then immediately clears, clearSearch() runs
+      // on the empty-input branch BUT the trailing timer still fires
+      // with the stale (non-empty) args — re-showing the dropdown
+      // even though the input is empty. Bail if the live query value
+      // is empty so the trailing timer has no effect.
+      if (get(searchQueryStore).trim() === "") return null;
       searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
@@ -400,6 +416,13 @@
         columnDistinctCounts = {};
       }
     })();
+
+    // Proactively warm up the searcher's heavy resources (hybrid-mode
+    // embedder model) so the user's first search query doesn't pay
+    // the ~22MB model download + WebGPU init latency on a cold start.
+    // Fire-and-forget; if it fails, hybrid will just lazy-load on
+    // first query as before.
+    void searcher.warmup?.().catch(() => {});
   });
 
   let paletteOpen = $state(false);
@@ -1055,7 +1078,8 @@
           options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
         />
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-          Full-text matches keywords; vector matches by semantic similarity to the embedding.
+          Hybrid combines keyword + semantic matching in one ranked list. Full-text matches keywords
+          only; vector matches by semantic similarity to the embedding.
         </div>
       </div>
     {/if}

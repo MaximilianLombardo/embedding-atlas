@@ -150,11 +150,30 @@ export interface Searcher {
     options?: { limit?: number; predicate?: string | null; onStatus?: (status: string) => void },
   ): Promise<{ id: any; distance?: number }[]>;
 
+  /**
+   * Perform a hybrid search — lexical retrieval (BM25 + typo tolerance)
+   * followed by vector-similarity reranking. Returns a single fused
+   * ranking. The built-in `FullTextSearcher` provides this when a text
+   * column is configured; hosts can override with their own
+   * implementation if they prefer to drive the fusion server-side.
+   */
+  hybridSearch?(
+    query: string,
+    options?: { limit?: number; predicate?: string | null; onStatus?: (status: string) => void },
+  ): Promise<{ id: any; distance?: number }[]>;
+
   /** Find nearest neighbors of the row of the given id */
   nearestNeighbors?(
     id: any,
     options?: { limit?: number; predicate?: string | null; onStatus?: (status: string) => void },
   ): Promise<{ id: any; distance?: number }[]>;
+
+  /**
+   * Optional: pre-load any heavy resources (e.g. embedder model) so the
+   * first user-triggered query isn't slow. The host should call this once,
+   * fire-and-forget, after the dataset loads. Idempotent.
+   */
+  warmup?(): Promise<void>;
 }
 
 export class EmbeddingAtlas {

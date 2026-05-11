@@ -6,12 +6,21 @@ import * as SQL from "@uwdata/mosaic-sql";
 import { WorkerRPC } from "./worker_helper.js";
 
 let _rpc: Promise<(name: string, ...args: any[]) => Promise<any>> | null = null;
-function connect() {
+/**
+ * Shared connection to the embedding worker. Lazy-instantiated on first
+ * call; subsequent callers (projection + search) reuse the same worker
+ * so models load once. Exported so the search-side hybrid path can also
+ * route through it (see SearchEmbedder).
+ */
+export function connectEmbeddingWorker() {
   if (_rpc == null) {
     let worker = new Worker(new URL("./embedding.worker.js", import.meta.url), { type: "module" });
     _rpc = WorkerRPC.connect(worker);
   }
   return _rpc;
+}
+function connect() {
+  return connectEmbeddingWorker();
 }
 
 async function* inputBatches(

@@ -51,6 +51,12 @@ export interface QueryRequest {
   identifier: string;
   query: string;
   limit: number;
+  /**
+   * When true, return `{ id, text }[]` instead of just `id[]`. Used by
+   * the hybrid path to embed candidate texts without a separate SQL
+   * roundtrip (the worker already stores text on each doc).
+   */
+  withText?: boolean;
 }
 
 self.onmessage = async (e: MessageEvent<ClearRequest | PointsRequest | QueryRequest>) => {
@@ -89,8 +95,16 @@ self.onmessage = async (e: MessageEvent<ClearRequest | PointsRequest | QueryRequ
         threshold: 0,
       });
       // hit.document is the stored doc; pointId is the original id.
-      const ids = results.hits.map((h: any) => h.document.pointId);
-      postMessage({ identifier: e.data.identifier, result: ids });
+      if (e.data.withText) {
+        const result = results.hits.map((h: any) => ({
+          id: h.document.pointId,
+          text: h.document.text,
+        }));
+        postMessage({ identifier: e.data.identifier, result });
+      } else {
+        const ids = results.hits.map((h: any) => h.document.pointId);
+        postMessage({ identifier: e.data.identifier, result: ids });
+      }
       break;
     }
   }
