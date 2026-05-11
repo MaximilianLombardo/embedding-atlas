@@ -78,10 +78,14 @@ self.onmessage = async (e: MessageEvent<ClearRequest | PointsRequest | QueryRequ
         term: e.data.query,
         properties: ["text"],
         limit: e.data.limit,
-        // Levenshtein typo tolerance: 1 edit per query token. Catches
-        // common typos ("authntic" → "authentic") without blowing up
-        // candidate set on longer queries.
-        tolerance: 1,
+        // Levenshtein typo tolerance: 2 edits per query token. Tolerance
+        // 1 catches single substitutions/insertions/deletions but misses
+        // transpositions ("protien" ↔ "protein" = 2 substitutions in
+        // standard Levenshtein), which are the most common typo class.
+        // 2 covers those + double-finger-slips without exploding the
+        // candidate set noticeably on this scale (≤ low thousands of
+        // rows in the index).
+        tolerance: 2,
         threshold: 0,
       });
       // hit.document is the stored doc; pointId is the original id.
