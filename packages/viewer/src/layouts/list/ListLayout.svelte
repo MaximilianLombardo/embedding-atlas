@@ -226,6 +226,16 @@
                behavior is identical: wheel events on the visible
                portion still drive scrollEl's scrollTop the same way.
 
+               IMPORTANT: outer uses `overflow-clip`, NOT `overflow-
+               hidden`. `hidden` still creates a scroll container —
+               wheel events that propagate up past the table's
+               scrollEl (when scrollEl is at its scroll limit) would
+               scroll the outer's hidden overflow, shifting the inner
+               UP and pulling the TableTabBar / Instances toolbar OUT
+               of view with no way to scroll back. `clip` clips
+               visually without making the element scrollable, so
+               wheel chains naturally bubble past it.
+
                Doesn't apply to the embedding's inner: the WebGL
                scatter NEEDS to render at its visible size (otherwise
                the bottom of the plot is cropped), so the embedding's
@@ -233,12 +243,12 @@
                viewport change — which is cheap O(1) vs the
                virtualizer's per-frame row-mount. -->
           <div
-            class="overflow-hidden flex-none"
+            class="overflow-clip flex-none"
             style:height="{hasTable ? tblH : 0}px"
             style:transition="height 300ms ease-in-out"
           >
             <div
-              class="flex flex-col gap-1 overflow-hidden min-h-0"
+              class="flex flex-col gap-1 overflow-clip min-h-0"
               style:height="{containerHeight}px"
             >
               {#if chatAvailable}

@@ -374,7 +374,12 @@
   }
 </script>
 
-<div class="w-full h-full overflow-auto" bind:this={scrollEl}>
+<!-- overscroll-contain prevents wheel events from chaining out to
+     ancestors when the table reaches its scroll boundary. The table
+     is a self-contained scroll surface; scrolling past its bottom
+     row shouldn't pull the surrounding toolbar / Chat/Table switcher
+     out of view via an ancestor's hidden-overflow scroll container. -->
+<div class="w-full h-full overflow-auto overscroll-contain" bind:this={scrollEl}>
   <table class="border-separate border-spacing-0 table-fixed w-full">
     <thead class="sticky top-0 z-10 bg-white dark:bg-black">
       <tr>
