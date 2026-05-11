@@ -208,12 +208,39 @@
         </div>
         {#if sections.table.length > 0}
           {@const tblH = hasEmbedding ? tableHeight : containerHeight}
+          <!-- Table wrapper. The inner is intentionally PINNED to
+               containerHeight (not h-full of the animated outer) so the
+               @tanstack/svelte-virtual ResizeObserver sees a stable
+               scroll-element height through every transition. Without
+               this, every animation frame would invalidate the
+               virtualizer's visible range and mount one fresh row's
+               worth of cells (~40 ContentRenderers × ~18 frames ≈ 720
+               renders during a 300 ms animation), which the user can
+               see as table-content jitter while the outer is growing
+               or shrinking.
+
+               Cost: when embedding is also visible the inner extends
+               below the outer's clipped bottom — the virtualizer
+               renders a few rows that aren't on screen. Cheap (they're
+               static once mounted), and the user-visible scroll
+               behavior is identical: wheel events on the visible
+               portion still drive scrollEl's scrollTop the same way.
+
+               Doesn't apply to the embedding's inner: the WebGL
+               scatter NEEDS to render at its visible size (otherwise
+               the bottom of the plot is cropped), so the embedding's
+               inner stays at h-full and pays a per-frame WebGL
+               viewport change — which is cheap O(1) vs the
+               virtualizer's per-frame row-mount. -->
           <div
             class="overflow-hidden flex-none"
             style:height="{hasTable ? tblH : 0}px"
             style:transition="height 300ms ease-in-out"
           >
-            <div class="flex flex-col gap-1 overflow-hidden min-h-0 h-full">
+            <div
+              class="flex flex-col gap-1 overflow-hidden min-h-0"
+              style:height="{containerHeight}px"
+            >
               {#if chatAvailable}
                 <div class="flex-none flex items-center gap-2 px-1">
                   <TableTabBar value={tableTab} onChange={setTableTab} />
