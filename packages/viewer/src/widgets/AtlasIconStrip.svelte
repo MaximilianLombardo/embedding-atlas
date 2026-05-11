@@ -26,11 +26,17 @@
   │👁│  TOGGLES — full-opacity icon (on) vs ring/outlined icon (off);
   │👁│           no bg accent
   │👁│
+  ├──┤  ← `mt-auto` on the divider preceding the first pinned section
+  │☀ │  MOMENTARY (pinned) — never any active fill or accent; just hover.
   ├──┤
-  │⚙ │  MOMENTARY — never any active fill or accent; just hover state.
-  ├──┤  ← `mt-auto` on the divider preceding the LAST section
-  │☀ │
+  │⚙ │
   └──┘
+
+  Bottom-pinning: any section can set `pinnedToBottom: true`. The
+  divider before the first such section gets `mt-auto`, pushing it
+  AND every section after it to the bottom edge. This lets the host
+  put multiple controls in the bottom group (e.g. theme + settings)
+  without the strip needing to know how many.
 
   The strip is presentational — it has no atlas-state knowledge of
   its own. The host (EmbeddingAtlas.svelte) supplies the section
@@ -65,6 +71,13 @@
     key: string;
     kind: SectionKind;
     buttons: StripButton[];
+    /**
+     * If true, this section (and every section after it) is pushed
+     * to the bottom of the strip. Achieved by applying `mt-auto` to
+     * the divider preceding the FIRST pinned section. Sections with
+     * no pinned flag stack from the top as usual.
+     */
+    pinnedToBottom?: boolean;
   }
 
   interface Props {
@@ -72,7 +85,14 @@
   }
 
   let { sections }: Props = $props();
-  let lastIndex = $derived(sections.length - 1);
+
+  // Index of the first bottom-pinned section. Defaults to a sentinel
+  // (>= sections.length) when no section is pinned — the `mt-auto`
+  // class then never applies and all sections stack from the top.
+  let firstPinnedIndex = $derived.by(() => {
+    const i = sections.findIndex((s) => s.pinnedToBottom === true);
+    return i === -1 ? sections.length : i;
+  });
 </script>
 
 <div
@@ -84,7 +104,7 @@
     {#if i > 0}
       <hr
         class="border-0 border-t border-slate-200 dark:border-slate-700 my-1"
-        class:mt-auto={i === lastIndex}
+        class:mt-auto={i === firstPinnedIndex}
       />
     {/if}
 

@@ -558,27 +558,29 @@
   // hand it to the strip. See widgets/AtlasIconStrip.svelte.
   //
   // Sections (top to bottom):
-  //   1. layout   (kind="radio")     — List / Dashboard. Switch layout.
-  //   2. show-hide (kind="toggles")  — Embedding / Table / Charts
-  //                                    visibility. Always visible AND
-  //                                    always active, on every layout.
-  //                                    State lives on the LIST layout
-  //                                    regardless of current layout, so
-  //                                    clicks on dashboard mutate list
-  //                                    state silently and the effect
-  //                                    appears on next list-switch.
-  //   3. settings (kind="momentary") — Gear icon, opens the settings
-  //                                    modal. Section navigation
-  //                                    (Global / Search / chart-
-  //                                    contributed) lives inside the
-  //                                    modal as a vertical tab strip
-  //                                    rather than in the icon strip.
-  //   4. theme    (kind="momentary") — Sun ↔ Moon icon swap. Hidden
-  //                                    when the host hard-codes
-  //                                    colorScheme.
-  // The LAST section is pinned to the bottom via AtlasIconStrip's
-  // mt-auto rule on its preceding divider; with no host-supplied
-  // colorScheme, that's the theme section. With one, it's settings.
+  //   1. layout    (kind="radio")     — List / Dashboard. Switch layout.
+  //   2. show-hide (kind="toggles")   — Embedding / Table / Charts
+  //                                     visibility. Always visible AND
+  //                                     always active, on every layout.
+  //                                     State lives on the LIST layout
+  //                                     regardless of current layout, so
+  //                                     clicks on dashboard mutate list
+  //                                     state silently and the effect
+  //                                     appears on next list-switch.
+  //   3. theme    (kind="momentary")  — pinnedToBottom. Sun ↔ Moon icon
+  //                                     swap. Hidden when the host
+  //                                     hard-codes colorScheme.
+  //   4. settings (kind="momentary")  — pinnedToBottom. Gear icon, opens
+  //                                     the settings modal. Section
+  //                                     navigation (Global / Search /
+  //                                     chart-contributed) lives inside
+  //                                     the modal as a vertical tab
+  //                                     strip rather than in the icon
+  //                                     strip.
+  // The first section flagged `pinnedToBottom` (theme when colorScheme
+  // is auto, otherwise settings) plus everything after it gets pushed
+  // to the bottom edge by AtlasIconStrip's `mt-auto` rule. Theme +
+  // settings together feel like a single "lower-left corner" group.
   let stripSections = $derived.by(() => {
     // Show-hide active states always reflect LIST-LAYOUT state, so
     // the buttons read truthfully even while the user is on dashboard.
@@ -598,6 +600,7 @@
       key: string;
       kind: "radio" | "toggles" | "momentary";
       buttons: StripButton[];
+      pinnedToBottom?: boolean;
     };
 
     const sections: StripSection[] = [
@@ -645,23 +648,17 @@
           },
         ],
       },
-      {
-        key: "settings",
-        kind: "momentary",
-        buttons: [
-          {
-            icon: IconSettings,
-            title: "Settings (⌘B)",
-            onClick: () => (settingsOpen = true),
-          },
-        ],
-      },
     ];
 
+    // Bottom-pinned group: theme (if auto) then settings. Order
+    // matters — theme goes first so settings ends up at the very
+    // bottom corner (the user reads from top to bottom, and the
+    // gear is the more frequently-clicked "destination" of the two).
     if (colorSchemeProp == null) {
       sections.push({
         key: "theme",
         kind: "momentary",
+        pinnedToBottom: true,
         buttons: [
           {
             icon: $colorScheme === "dark" ? IconLightMode : IconDarkMode,
@@ -673,6 +670,19 @@
         ],
       });
     }
+
+    sections.push({
+      key: "settings",
+      kind: "momentary",
+      pinnedToBottom: true,
+      buttons: [
+        {
+          icon: IconSettings,
+          title: "Settings (⌘B)",
+          onClick: () => (settingsOpen = true),
+        },
+      ],
+    });
 
     return sections;
   });
