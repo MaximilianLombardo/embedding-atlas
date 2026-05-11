@@ -259,8 +259,17 @@
     const targetIndex = Math.max(0, offset - 1);
     (contentView as any)?.scrollToIndex?.(targetIndex, "center");
     // Wait for the row to land in the DOM, then scroll it into precise view.
+    // `behavior: "instant"` (not "smooth") because animateToPoint fires
+    // in response to a user-invoked navigation — search-result click,
+    // embedding double-click, etc. The user already invoked the
+    // "jump" gesture, so a 500ms smooth-scroll animation just adds
+    // perceived latency without telegraphing anything. The embedding
+    // pane is simultaneously running its own ~500ms fly-to; making
+    // them race makes the whole interaction feel slow. Instant scroll
+    // on the table side lets the embedding's animation be the only
+    // motion the user tracks.
     const el = await (contentView as any)?.getElementForId?.(id);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    el?.scrollIntoView({ behavior: "instant", block: "center" });
     // Persist the user's anchor so reloads land back here.
     onStateChange({ offset: targetIndex });
   }
