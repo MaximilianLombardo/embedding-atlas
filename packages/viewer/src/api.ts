@@ -167,6 +167,13 @@ export interface Searcher {
     id: any,
     options?: { limit?: number; predicate?: string | null; onStatus?: (status: string) => void },
   ): Promise<{ id: any; distance?: number }[]>;
+
+  /**
+   * Optional: pre-load any heavy resources (e.g. embedder model) so the
+   * first user-triggered query isn't slow. The host should call this once,
+   * fire-and-forget, after the dataset loads. Idempotent.
+   */
+  warmup?(): Promise<void>;
 }
 
 export class EmbeddingAtlas {

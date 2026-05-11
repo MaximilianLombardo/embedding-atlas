@@ -380,6 +380,10 @@ export function resolveSearcher(options: {
     let fts = new FullTextSearcher(coordinator, table, { id: idColumn, text: textColumn });
     result.fullTextSearch = fts.fullTextSearch.bind(fts);
     result.hybridSearch = fts.hybridSearch.bind(fts);
+    // Hybrid is heavy on first call (~22MB model download + WebGPU
+    // init). Expose warmup so the host can kick off model load in the
+    // background after the dataset settles.
+    result.warmup = fts.warmEmbedder.bind(fts);
   }
 
   if (searcher?.vectorSearch != null) {

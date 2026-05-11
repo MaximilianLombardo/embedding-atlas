@@ -409,6 +409,13 @@
         columnDistinctCounts = {};
       }
     })();
+
+    // Proactively warm up the searcher's heavy resources (hybrid-mode
+    // embedder model) so the user's first search query doesn't pay
+    // the ~22MB model download + WebGPU init latency on a cold start.
+    // Fire-and-forget; if it fails, hybrid will just lazy-load on
+    // first query as before.
+    void searcher.warmup?.().catch(() => {});
   });
 
   let paletteOpen = $state(false);
