@@ -90,17 +90,14 @@
   let selection = $state.raw<DataPoint[] | null>(null);
   let overlayProps = $state.raw<{ center: DataPoint | null; points: DataPoint[] } | null>(null);
 
-  // When the detail drawer opens, clear the hover tooltip — otherwise
-  // the preview card lingers under the drawer, and the user sees both
-  // surfaces once the drawer is dismissed. The drawer is the
-  // committed detail surface, so the preview should yield to it.
-  $effect(() => {
-    const store = context.detailRow;
-    if (store == null) return;
-    return store.subscribe((row) => {
-      if (row != null && tooltip != null) tooltip = null;
-    });
-  });
+  // Drawer-open → clear hover tooltip happens inline in the
+  // `onOpenDetail` callback (see customTooltip.props below). The
+  // earlier $effect that subscribed to context.detailRow turned out
+  // to silently break hover registration — likely because the
+  // subscribe callback synchronously fires during effect setup and
+  // tangles up with Svelte's reactive tracking around the local
+  // `tooltip` $state.raw. Inline clearing in the click handler is
+  // the same end behavior without the subscription machinery.
 
   // Update the category mapping and legend.
   $effect.pre(() => {
@@ -304,7 +301,10 @@
         onNearestNeighborSearch:
           (context.searchModes ?? []).indexOf("neighbors") >= 0 ? (id: any) => context.search?.(id, "neighbors") : null,
         onOpenDetail: context.detailRow
-          ? (point: DataPoint) => context.detailRow?.set((point.fields ?? null) as Record<string, any> | null)
+          ? (point: DataPoint) => {
+              context.detailRow?.set((point.fields ?? null) as Record<string, any> | null);
+              tooltip = null;
+            }
           : null,
       },
     }}
