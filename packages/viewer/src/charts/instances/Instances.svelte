@@ -207,6 +207,24 @@
     });
   });
 
+  // Reveal channel — host writes a nonce-tagged ticket to
+  // `context.revealTicket` from the drawer's "Show in table" button.
+  // Animate when the nonce changes; the nonce makes re-revealing the
+  // same row work (a same-value Writable wouldn't re-fire by itself).
+  // svelte-ignore state_referenced_locally
+  let revealTicketStore = $derived(context.revealTicket);
+  let lastRevealNonce = $state(0);
+  $effect(() => {
+    const ticket = $revealTicketStore;
+    if (ticket == null) return;
+    if (ticket.nonce === lastRevealNonce) return;
+    lastRevealNonce = ticket.nonce;
+    // Defer one microtask so any layout-state changes the host
+    // dispatched in the same tick (showTable=true, layout="list")
+    // settle before we try to scroll inside the not-yet-mounted view.
+    queueMicrotask(() => animateToPoint(ticket.id));
+  });
+
   // Initial offset from chartState.offset (D1: persists scroll-to-on-mount).
   // Fires exactly once, when the loader has settled to a non-empty
   // totalCount and the Table has mounted (so contentView is bound).

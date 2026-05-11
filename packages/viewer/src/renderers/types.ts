@@ -52,4 +52,14 @@ export interface ColumnStyle {
   /** Human-facing label for this column. When unset, the field name is
    *  humanized (snake_case → "Snake case", camelCase → "Camel case"). */
   label?: string;
+
+  /** Explicit section assignment in the detail drawer. When unset, the
+   *  drawer infers a section from the field's name and value type:
+   *   - "id":       identifier-shaped values (doi, pmid, *_id, URLs)
+   *   - "metadata": numbers + short categorical strings
+   *   - "tags":     array values
+   *   - "content":  long string values (>= 120 chars)
+   *   - "flags":    booleans
+   *  Set this to override the inference for a specific column. */
+  group?: "id" | "metadata" | "tags" | "content" | "flags";
 }

@@ -495,6 +495,25 @@
   let detailRowValue = $state<Record<string, any> | null>(null);
   detailRowStore.subscribe((v) => (detailRowValue = v));
 
+  // Table-reveal channel. The drawer's "Show in table" button calls
+  // `revealRow(id)` which: forces list layout + showTable, bumps a
+  // nonce-tagged ticket here, and closes the drawer. Instances
+  // subscribes to the ticket and runs animateToPoint when nonce
+  // changes — nonce-based so re-revealing the same row still fires.
+  let revealTicketStore = writable<{ id: RowID; nonce: number } | null>(null);
+  let revealNonce = 0;
+  function revealRow(id: RowID) {
+    if (id == null) return;
+    if (layout !== "list") layout = "list";
+    const listState = (layoutStates.list ?? {}) as Record<string, any>;
+    if (listState.showTable === false) {
+      layoutStates = { ...layoutStates, list: { ...listState, showTable: true } };
+    }
+    revealNonce += 1;
+    revealTicketStore.set({ id, nonce: revealNonce });
+    detailRowStore.set(null);
+  }
+
   // svelte-ignore state_referenced_locally
   let chartContext: ChartContext = {
     coordinator: coordinator,
@@ -529,6 +548,8 @@
     searcherStatus: searcherStatusStore,
     highlight: writable(null),
     detailRow: detailRowStore,
+    revealRow: revealRow,
+    revealTicket: revealTicketStore,
     embeddingViewConfig: embeddingViewConfig,
     embeddingViewLabels: embeddingViewLabels,
   };
@@ -1014,9 +1035,11 @@
 
 <DetailDrawer
   row={detailRowValue}
+  idColumn={data.id}
   columns={columns.map((c) => c.name)}
   columnStyles={$resolvedColumnStyles}
   onClose={() => detailRowStore.set(null)}
+  onShowInTable={(id) => revealRow(id)}
 />
 
 <svelte:window onkeydown={onWindowKeydown} />
