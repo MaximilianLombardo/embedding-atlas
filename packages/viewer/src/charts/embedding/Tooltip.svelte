@@ -32,32 +32,35 @@
     style:max-width="380px"
     style:max-height="320px"
   >
-    {#if hasActions}
-      <div class="flex flex-row gap-2 items-center pb-2 border-b border-slate-200 dark:border-slate-700">
-        {#if onNearestNeighborSearch}
-          <button
-            type="button"
-            class={pillClass}
-            onclick={() => onNearestNeighborSearch?.(tooltip.identifier)}
-            title="Search for nearest neighbors of this point"
-          >
-            <IconSearch class="w-3.5 h-3.5" />
-            Neighbors
-          </button>
+    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} mode="preview">
+      {#snippet afterHeader()}
+        {#if hasActions}
+          <div class="flex flex-row gap-2 items-center">
+            {#if onNearestNeighborSearch}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onNearestNeighborSearch?.(tooltip.identifier)}
+                title="Search for nearest neighbors of this point"
+              >
+                <IconSearch class="w-3.5 h-3.5" />
+                Neighbors
+              </button>
+            {/if}
+            {#if onOpenDetail}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onOpenDetail?.(tooltip)}
+                title="Open the full detail drawer for this row"
+              >
+                <IconRight class="w-3.5 h-3.5" />
+                Open detail
+              </button>
+            {/if}
+          </div>
         {/if}
-        {#if onOpenDetail}
-          <button
-            type="button"
-            class={pillClass}
-            onclick={() => onOpenDetail?.(tooltip)}
-            title="Open the full detail drawer for this row"
-          >
-            <IconRight class="w-3.5 h-3.5" />
-            Open detail
-          </button>
-        {/if}
-      </div>
-    {/if}
-    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} mode="preview" />
+      {/snippet}
+    </TooltipContent>
   </div>
 </div>

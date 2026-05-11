@@ -90,6 +90,18 @@
   let selection = $state.raw<DataPoint[] | null>(null);
   let overlayProps = $state.raw<{ center: DataPoint | null; points: DataPoint[] } | null>(null);
 
+  // When the detail drawer opens, clear the hover tooltip — otherwise
+  // the preview card lingers under the drawer, and the user sees both
+  // surfaces once the drawer is dismissed. The drawer is the
+  // committed detail surface, so the preview should yield to it.
+  $effect(() => {
+    const store = context.detailRow;
+    if (store == null) return;
+    return store.subscribe((row) => {
+      if (row != null && tooltip != null) tooltip = null;
+    });
+  });
+
   // Update the category mapping and legend.
   $effect.pre(() => {
     let promise = context.cache.value(`embedding/category/${categoryColumn}`, () =>

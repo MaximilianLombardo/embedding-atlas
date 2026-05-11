@@ -1,5 +1,7 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
+
   import ContentRenderer from "../renderers/ContentRenderer.svelte";
 
   import { stringify } from "../renderers/renderer_utils.js";
@@ -12,9 +14,13 @@
     /** "preview" curates a short view (header + a few badges + truncated body
      *  + a "more fields" hint). "full" shows everything in its natural form. */
     mode?: "preview" | "full";
+    /** Optional snippet rendered immediately below the header. The embedding
+     *  tooltip uses this to place its Neighbors / Open-detail pills under
+     *  the title rather than above it. */
+    afterHeader?: Snippet;
   }
 
-  let { columns, values, columnStyles, mode = "full" }: Props = $props();
+  let { columns, values, columnStyles, mode = "full", afterHeader }: Props = $props();
 
   // Resolve each key to one of header/full/badge/hidden. If the user marks
   // a field explicitly via ColumnStyle.display, that wins. Otherwise:
@@ -102,6 +108,10 @@
         <ContentRenderer value={values[headerKey]} style={columnStyles[headerKey]} />
       {/if}
     </div>
+  {/if}
+
+  {#if afterHeader}
+    {@render afterHeader()}
   {/if}
 
   {#if visibleBadges.length > 0}
