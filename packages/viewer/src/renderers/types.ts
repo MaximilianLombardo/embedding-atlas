@@ -37,6 +37,19 @@ export interface ColumnStyle {
   /** Options passed to the renderer class as props */
   options?: Record<string, any>;
 
-  /** Display style in the tooltip */
-  display?: "full" | "badge" | "hidden";
+  /** Display style in the tooltip + drawer.
+   *  - "header": title-like, rendered without a label at the top of the card
+   *  - "full":   stacked label+value row in the body (default)
+   *  - "badge":  compact chip in the metadata row
+   *  - "hidden": never shown in tooltip/drawer
+   *
+   *  At most one column should be "header"; if multiple are marked, the
+   *  first wins. If none are marked, the renderer picks one heuristically
+   *  (prefers a column literally named "title", "name", or "label").
+   */
+  display?: "header" | "full" | "badge" | "hidden";
+
+  /** Human-facing label for this column. When unset, the field name is
+   *  humanized (snake_case → "Snake case", camelCase → "Camel case"). */
+  label?: string;
 }

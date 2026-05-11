@@ -18,35 +18,46 @@
   let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch, onOpenDetail }: Props = $props();
 
   let hasActions = $derived(onNearestNeighborSearch != null || onOpenDetail != null);
+
+  const pillClass =
+    "flex items-center gap-1 px-2.5 py-1 rounded-full border border-slate-300 dark:border-slate-600 " +
+    "bg-white/60 dark:bg-slate-900/60 text-xs font-medium text-slate-600 dark:text-slate-300 " +
+    "hover:bg-slate-100 dark:hover:bg-slate-700/60 hover:text-slate-900 dark:hover:text-slate-100 transition";
 </script>
 
 <div class="embedding-atlas-root">
   <div
-    class="p-2 border flex flex-col gap-2 border-slate-300 dark:border-slate-600 shadow-md text-slate-700 dark:text-slate-300 rounded-md text-ellipsis overflow-x-hidden overflow-y-scroll bg-white/75 dark:bg-slate-800/75 backdrop-blur-sm"
+    class="p-2 border flex flex-col gap-2 border-slate-300 dark:border-slate-600 shadow-md text-slate-700 dark:text-slate-300 rounded-md text-ellipsis overflow-x-hidden overflow-y-auto bg-white/85 dark:bg-slate-800/85 backdrop-blur-sm"
     class:dark={colorScheme == "dark"}
-    style:max-width="400px"
-    style:max-height="300px"
+    style:max-width="380px"
+    style:max-height="320px"
   >
     {#if hasActions}
-      <div class="flex flex-row gap-3 pb-2 border-b border-slate-200 dark:border-slate-700">
+      <div class="flex flex-row gap-2 items-center pb-2 border-b border-slate-200 dark:border-slate-700">
         {#if onNearestNeighborSearch}
           <button
-            class="text-sm flex gap-1 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+            type="button"
+            class={pillClass}
             onclick={() => onNearestNeighborSearch?.(tooltip.identifier)}
+            title="Search for nearest neighbors of this point"
           >
-            <IconSearch /> Neighbors
+            <IconSearch class="w-3.5 h-3.5" />
+            Neighbors
           </button>
         {/if}
         {#if onOpenDetail}
           <button
-            class="text-sm flex gap-1 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+            type="button"
+            class={pillClass}
             onclick={() => onOpenDetail?.(tooltip)}
+            title="Open the full detail drawer for this row"
           >
-            <IconRight /> Open detail
+            <IconRight class="w-3.5 h-3.5" />
+            Open detail
           </button>
         {/if}
       </div>
     {/if}
-    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} />
+    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} mode="preview" />
   </div>
 </div>
