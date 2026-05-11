@@ -4,6 +4,7 @@ import type { Coordinator } from "@uwdata/mosaic-core";
 import * as SQL from "@uwdata/mosaic-sql";
 
 import type { Searcher } from "../api.js";
+import type { RowID } from "../charts/chart.js";
 import { connectEmbeddingWorker } from "../embedding/index.js";
 
 // Default embedding model for hybrid search. 384-dim, ~22MB ONNX,
@@ -126,6 +127,17 @@ class SearchWorkerAPI {
   }
 }
 
+// Batch size for the warmup row-embedding pass. Tuned to match the
+// existing projection-embedding batch size in embedding/index.ts (64),
+// which has been validated on the same WebGPU/WASM path.
+const ROW_EMBED_BATCH_SIZE = 64;
+
+// Skip the precompute-vectors path when the dataset is larger than this.
+// At 384 dims × 4 bytes each, 100k rows = ~150MB resident — already
+// pushing it; beyond that we'd starve the page. Above the cap, hybrid
+// falls back to per-query embedding (slow but functional).
+const MAX_ROWS_FOR_VECTOR_CACHE = 100_000;
+
 export class FullTextSearcher implements Searcher {
   coordinator: Coordinator;
   table: string;
@@ -134,6 +146,20 @@ export class FullTextSearcher implements Searcher {
   backend: SearchWorkerAPI;
   embedder: SearchEmbedder;
   currentIndex: { predicate: string | null; promise: Promise<void> } | null = null;
+
+  /**
+   * Precomputed embedding per row, keyed by id. Populated during
+   * `warmEmbedder` AFTER the model loads. While populated, hybridSearch
+   * skips the per-query candidate-embedding step (which was the
+   * dominant cost — ~10s for 100 candidates) in favor of a synchronous
+   * Map lookup. The query text itself still embeds on demand (~50ms).
+   *
+   * Null = not yet populated; query will fall back to slow path.
+   * Empty Map = warmup explicitly skipped (dataset too large or no
+   * model available); same fallback.
+   */
+  private allRowVectors: Map<RowID, Float32Array> | null = null;
+  private warmupPromise: Promise<void> | null = null;
 
   constructor(
     coordinator: Coordinator,
@@ -152,12 +178,68 @@ export class FullTextSearcher implements Searcher {
   }
 
   /**
-   * Pre-warm the embedder model in the background. Callers (e.g. the
-   * host on dataset-load) can invoke this to hide the model-load
-   * latency before the user types a query. Idempotent.
+   * Pre-warm hybrid-search resources in the background:
+   *   1. Load the embedder model (~22MB)
+   *   2. Embed every row's text → populate `allRowVectors` cache
+   *
+   * After warmup completes, hybrid queries become ~50ms instead of
+   * ~10s because we skip per-query candidate embedding.
+   *
+   * Callers (e.g. host on dataset-load) invoke this fire-and-forget.
+   * Idempotent — concurrent calls share the same promise.
    */
   warmEmbedder(onStatus?: (status: string) => void): Promise<void> {
-    return this.embedder.ensureLoaded(onStatus);
+    if (this.warmupPromise != null) return this.warmupPromise;
+    this.warmupPromise = (async () => {
+      await this.embedder.ensureLoaded(onStatus);
+      await this.precomputeAllRowVectors(onStatus);
+    })();
+    return this.warmupPromise;
+  }
+
+  /**
+   * Pull every row's text, batch-embed via the worker, store in
+   * `allRowVectors`. One-time cost per FullTextSearcher instance.
+   * Cache survives filter changes (vectors are per-row, not
+   * per-filter).
+   */
+  private async precomputeAllRowVectors(onStatus?: (status: string) => void): Promise<void> {
+    // Fetch all (id, text). Read from the FULL table (no predicate) —
+    // vectors must cover every row, since lexical candidates could be
+    // any subset under any future filter.
+    onStatus?.("Loading rows...");
+    const result = await this.coordinator.query(`
+      SELECT
+        ${SQL.column(this.columns.id)} AS id,
+        ${SQL.column(this.columns.text)} AS text
+      FROM ${this.table}
+    `);
+    const rows = Array.from(result) as { id: any; text: string | null }[];
+
+    if (rows.length > MAX_ROWS_FOR_VECTOR_CACHE) {
+      // Mark as "intentionally empty" so hybridSearch knows to use the
+      // slow path without re-attempting precompute.
+      this.allRowVectors = new Map();
+      onStatus?.("");
+      return;
+    }
+
+    const vectors = new Map<RowID, Float32Array>();
+    const total = rows.length;
+    for (let start = 0; start < rows.length; start += ROW_EMBED_BATCH_SIZE) {
+      const batch = rows.slice(start, start + ROW_EMBED_BATCH_SIZE);
+      const texts = batch.map((r) => r.text ?? "");
+      // Slice copy each Float32Array so we don't hold the whole batch
+      // ArrayBuffer alive for one small view (the worker returns a
+      // single contiguous buffer per batch).
+      const batchVectors = await this.embedder.embed(texts);
+      batch.forEach((r, i) => {
+        vectors.set(r.id, new Float32Array(batchVectors[i]));
+      });
+      onStatus?.(`Embedding rows... ${Math.min(start + batch.length, total)} / ${total}`);
+    }
+    this.allRowVectors = vectors;
+    onStatus?.("");
   }
 
   predicateString(predicate: any | null): string | null {
@@ -252,13 +334,34 @@ export class FullTextSearcher implements Searcher {
     }
 
     options.onStatus?.("Reranking...");
-    // Batch embed: [query, ...candidate texts] in one worker call.
-    const allTexts = [trimmed, ...candidates.map((c) => c.text ?? "")];
-    const vectors = await this.embedder.embed(allTexts);
-    const queryVec = vectors[0];
+    // Fast path: precomputed row vectors available. Embed the query
+    // text only (one short string) and cosine against cached
+    // candidate vectors. ~50ms total instead of ~10s.
+    //
+    // Slow path: no cache yet (warmup didn't run or hasn't finished).
+    // Batch-embed [query, ...candidate texts] in one worker call.
+    let queryVec: Float32Array;
+    let candidateVecs: Float32Array[];
+    if (this.allRowVectors != null && this.allRowVectors.size > 0) {
+      const [qv] = await this.embedder.embed([trimmed]);
+      queryVec = qv;
+      candidateVecs = candidates.map((c) => {
+        const v = this.allRowVectors!.get(c.id);
+        // Missing vector should be rare (only if the dataset grew
+        // after warmup, which doesn't happen in practice). Return a
+        // zero vector so cosine = 0 and the candidate falls back to
+        // pure lexical ranking.
+        return v ?? new Float32Array(queryVec.length);
+      });
+    } else {
+      const allTexts = [trimmed, ...candidates.map((c) => c.text ?? "")];
+      const vectors = await this.embedder.embed(allTexts);
+      queryVec = vectors[0];
+      candidateVecs = vectors.slice(1);
+    }
 
     // Cosine similarity (vectors are L2-normalized in the worker).
-    const vecScores = candidates.map((_, i) => dot(queryVec, vectors[i + 1]));
+    const vecScores = candidates.map((_, i) => dot(queryVec, candidateVecs[i]));
 
     // RRF fusion. Lexical rank = Orama's input order (BM25-sorted).
     // Vector rank = candidates re-sorted by cosine descending.
