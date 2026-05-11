@@ -100,6 +100,16 @@ export interface ChartContext {
   /** Tell the parent to show a search box. */
   search?: (query: any, mode: string) => void;
 
+  /**
+   * Fully dismiss any active search result + overlay. Used by the
+   * search bar's clear button and by click-outside handlers. Sets
+   * `searchResult` to null, `searchResultVisible` to false, and
+   * `searchQuery` to "" in one shot. Needed because Neighbors mode
+   * leaves `searchQuery` empty when it opens the dropdown, so the
+   * usual "set query to '' to dismiss" path doesn't fire any effect.
+   */
+  clearSearch?: () => void;
+
   /** A list of supported search modes. */
   searchModes?: string[];
 
@@ -123,6 +133,14 @@ export interface ChartContext {
    * When a new point is added to this list, views will animate to reveal the new point.
    */
   highlight: Writable<RowID[] | null>;
+
+  /**
+   * The row currently shown in the detail drawer (right-side persistent
+   * panel). Lifted out of `Instances.svelte` so the embedding tooltip's
+   * "Open detail" action can write to it too — one drawer, two trigger
+   * origins. The drawer itself is rendered at the EmbeddingAtlas root.
+   */
+  detailRow?: Writable<Record<string, any> | null>;
 
   /** Configuration for the embedding view. See docs for the EmbeddingView. */
   embeddingViewConfig?: EmbeddingViewConfig | null;

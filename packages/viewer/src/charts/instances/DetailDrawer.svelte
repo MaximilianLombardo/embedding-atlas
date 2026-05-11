@@ -51,17 +51,15 @@
 {#if row != null}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-50 flex justify-end"
-    onclick={(e) => {
-      // Close when clicking the backdrop, not the panel.
-      if (e.target === e.currentTarget) onClose();
-    }}
-  >
-    <!-- Backdrop fades in/out alongside the panel slide so the dismissal feels coordinated. -->
+  <div class="fixed inset-0 z-50 flex justify-end">
+    <!-- Backdrop owns the dismissal click. Putting the handler on the
+         outer flex container doesn't work because the backdrop is an
+         absolute-positioned sibling that fills it: target was always
+         the backdrop, not the container. -->
     <div
       class="absolute inset-0 bg-black/30 dark:bg-black/50"
       transition:fade={{ duration: 150 }}
+      onclick={onClose}
     ></div>
 
     <!-- Panel uses the same horizontal slide transition the chart sidebar uses (ListLayout.svelte). -->

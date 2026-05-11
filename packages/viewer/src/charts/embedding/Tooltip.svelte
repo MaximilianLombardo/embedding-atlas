@@ -4,7 +4,7 @@
 
   import TooltipContent from "../../views/TooltipContent.svelte";
 
-  import { IconSearch } from "../../assets/icons.js";
+  import { IconRight, IconSearch } from "../../assets/icons.js";
   import type { ColumnStyle } from "../../renderers/types.js";
 
   interface Props {
@@ -12,9 +12,12 @@
     columnStyles?: Record<string, ColumnStyle>;
     colorScheme: "light" | "dark";
     onNearestNeighborSearch?: (id: any) => void;
+    onOpenDetail?: (point: DataPoint) => void;
   }
 
-  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch }: Props = $props();
+  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch, onOpenDetail }: Props = $props();
+
+  let hasActions = $derived(onNearestNeighborSearch != null || onOpenDetail != null);
 </script>
 
 <div class="embedding-atlas-root">
@@ -24,18 +27,26 @@
     style:max-width="400px"
     style:max-height="300px"
   >
-    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} />
-    {#if onNearestNeighborSearch}
-      <div>
-        <button
-          class="text-sm flex gap-0.5 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-300"
-          onclick={() => {
-            onNearestNeighborSearch?.(tooltip.identifier);
-          }}
-        >
-          <IconSearch /> Nearest Neighbors
-        </button>
+    {#if hasActions}
+      <div class="flex flex-row gap-3 pb-2 border-b border-slate-200 dark:border-slate-700">
+        {#if onNearestNeighborSearch}
+          <button
+            class="text-sm flex gap-1 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+            onclick={() => onNearestNeighborSearch?.(tooltip.identifier)}
+          >
+            <IconSearch /> Neighbors
+          </button>
+        {/if}
+        {#if onOpenDetail}
+          <button
+            class="text-sm flex gap-1 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+            onclick={() => onOpenDetail?.(tooltip)}
+          >
+            <IconRight /> Open detail
+          </button>
+        {/if}
       </div>
     {/if}
+    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} />
   </div>
 </div>

@@ -29,7 +29,6 @@
 
   import ActionButton from "../../widgets/ActionButton.svelte";
   import ColumnControls from "./ColumnControls.svelte";
-  import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
 
@@ -79,13 +78,6 @@
   // 10-row sample. Local state keyed by column name; passed to Table to
   // seed table-core's columnSizing initial state.
   let defaultColumnWidths = $state.raw<Record<string, number>>({});
-
-  // Detail-drawer state for D3. Populated on row double-click; surfaces
-  // a side panel with all fields. Lives here so the drawer survives
-  // table refetches. We hold the row record itself rather than just an
-  // id — the table already had it on hand at click time, so re-fetching
-  // would be wasted work.
-  let detailRow = $state.raw<Record<string, any> | null>(null);
 
   // Combined column state (visibility / order / pinning). Owned here
   // so ColumnControls can write directly while Table reflects it into
@@ -275,7 +267,7 @@
 
   function handleRowDoubleClick(row: Record<string, any>) {
     if (row == null) return;
-    detailRow = row;
+    context.detailRow?.set(row);
   }
 
   // Seed columnState from localStorage once we know the column list.
@@ -438,13 +430,6 @@
       </div>
     {/if}
   </div>
-
-  <DetailDrawer
-    row={detailRow}
-    columns={loader?.columns ?? []}
-    columnStyles={columnStyles}
-    onClose={() => (detailRow = null)}
-  />
 </div>
 
 {#snippet tableSettings()}

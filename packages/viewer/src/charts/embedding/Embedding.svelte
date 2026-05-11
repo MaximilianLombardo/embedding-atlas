@@ -291,6 +291,9 @@
         columnStyles: $columnStyles,
         onNearestNeighborSearch:
           (context.searchModes ?? []).indexOf("neighbors") >= 0 ? (id: any) => context.search?.(id, "neighbors") : null,
+        onOpenDetail: context.detailRow
+          ? (point: DataPoint) => context.detailRow?.set((point.fields ?? null) as Record<string, any> | null)
+          : null,
       },
     }}
     customOverlay={{
@@ -354,10 +357,7 @@
       searcherStatus={$searcherStatusStore}
       visible={$searchResultVisibleStore}
       onResultClick={(item) => context.highlight.set([item.id])}
-      onClear={() => {
-        context.searchQuery!.set("");
-        context.searchResultVisible!.set(false);
-      }}
+      onClear={() => context.clearSearch?.()}
     />
   {/if}
 </div>
