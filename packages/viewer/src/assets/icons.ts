@@ -28,6 +28,12 @@ export { default as IconDashboardLayout } from "~icons/fluent/layout-dynamic-20-
 export { default as IconListLayout } from "~icons/fluent/layout-row-four-20-filled";
 export { default as IconTableView } from "~icons/fluent/layout-row-three-20-filled";
 export { default as IconTable } from "~icons/fluent/panel-bottom-20-filled";
+// Distinct from IconTable (the strip's show/hide-table toggle icon)
+// and IconTableView (the Cards/Table SegmentedControl). Used for the
+// "Table" tab inside the settings modal where the chart-registered
+// column controls live. A column-triple-edit glyph reads naturally
+// as "configure the table's columns."
+export { default as IconTableSettings } from "~icons/fluent/column-triple-edit-20-filled";
 export { default as IconMenu } from "~icons/fluent/panel-right-20-filled";
 export { default as IconPause } from "~icons/fluent/pause-20-filled";
 export { default as IconPin } from "~icons/fluent/pin-16-filled";
