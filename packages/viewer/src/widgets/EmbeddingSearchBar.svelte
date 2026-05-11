@@ -36,7 +36,7 @@
   import Mark from "mark.js";
   import type { Readable } from "svelte/store";
 
-  import { IconClose, IconFilter, IconSearch } from "../assets/icons.js";
+  import { IconClose, IconFilter, IconSearch, IconSpinner } from "../assets/icons.js";
   import type { SearchResultItem } from "../search/search.js";
 
   /** A subset of the search result store shape this component cares about. */
@@ -54,6 +54,13 @@
     /** Two-way bound — toggle button updates this. */
     searchFilterEnabled: boolean;
     onSearchFilterEnabledChange: (value: boolean) => void;
+    /**
+     * When true, the funnel icon swaps for a spinner — signal that
+     * the search clause has just been published and the table +
+     * embedding are recomputing. The host owns the timing
+     * (publishes, then clears after the cascade settles).
+     */
+    searchFilterPending?: boolean;
     /** Result store from the host. Null until the first query lands. */
     searchResult: Readable<SearchResult | null>;
     /** Status text from the searcher (e.g. "Loading model…"). */
@@ -71,6 +78,7 @@
     onSearchQueryChange,
     searchFilterEnabled,
     onSearchFilterEnabledChange,
+    searchFilterPending = false,
     searchResult,
     searcherStatus = "",
     visible,
@@ -182,7 +190,11 @@
       class:hover:text-slate-700={!searchFilterEnabled}
       class:dark:hover:text-slate-200={!searchFilterEnabled}
     >
-      <IconFilter class="w-3.5 h-3.5" />
+      {#if searchFilterPending}
+        <IconSpinner class="w-3.5 h-3.5" />
+      {:else}
+        <IconFilter class="w-3.5 h-3.5" />
+      {/if}
     </button>
   </div>
 

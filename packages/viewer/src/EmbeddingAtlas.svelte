@@ -91,6 +91,22 @@
 
   const crossFilter = Selection.crossfilter();
 
+  // Dedicated single-clause selection that holds ONLY the search
+  // filter chip (when the funnel is on). Publishing here instead of
+  // to `crossFilter` keeps the search clause out of the global
+  // cross-filter state, so charts subscribed to `crossFilter`
+  // directly (CountPlot, Predicates, FilteredCount) don't refire
+  // on every keystroke or toggle.
+  const searchSelection = Selection.single();
+
+  // `crossfilter({ include: [...] })` relays clauses from both
+  // upstream selections into this one. Subscribers (table +
+  // embedding) get the union of brushes + search clause, with the
+  // cross-mode self-skip logic still applied via `clause.clients`.
+  const narrowedFilter = Selection.crossfilter({
+    include: [crossFilter, searchSelection],
+  });
+
   function currentPredicate(): string | null {
     return predicateToString(crossFilter.predicate(null));
   }
@@ -160,6 +176,13 @@
   // the user's preference within the dataset survives reloads.
   const SEARCH_FILTER_KEY = "embedding-atlas:search-filter";
   let searchFilterEnabledStore = writable(false);
+  // Pending state for the funnel button's spinner. Goes true when we
+  // publish a search clause, clears after a short fixed window so the
+  // bar doesn't show a frozen spinner if Mosaic finishes faster than
+  // the cascade is visible to the user. Tied to a timer that's reset
+  // whenever a new publication happens.
+  let searchFilterPendingStore = writable(false);
+  let searchFilterPendingTimer: ReturnType<typeof setTimeout> | null = null;
   let searchResultStore = writable<{
     query: any;
     mode: string;
@@ -235,14 +258,15 @@
     }
   });
 
-  // Search-as-crossfilter publication. When the user opts into
-  // filtering via the search bar's funnel toggle AND there's a
-  // non-empty query AND the searcher has returned at least one
-  // result, publish a `column IN (ids)` predicate to the global
-  // cross-filter under a stable per-search source identity. The
-  // predicates panel automatically displays this clause as a chip
-  // (just like header filters appear there); clearing the chip
-  // independently clears the filter.
+  // Search-filter publication. When the user opts into filtering via
+  // the search bar's funnel toggle AND there's a non-empty query AND
+  // the searcher has returned at least one result, publish a
+  // `column IN (ids)` predicate to `searchSelection`. Because
+  // `narrowedFilter` includes (relays from) `searchSelection`, the
+  // clause flows to subscribers of `narrowedFilter` (table +
+  // embedding) but NOT to subscribers of `crossFilter` directly
+  // (CountPlot, Predicates, FilteredCount) — reducing the
+  // cross-filter cascade from N clients to 2.
   //
   // Source identity pattern mirrors HeaderFilterPopover.svelte —
   // a stable object so subsequent updates with the same source
@@ -260,20 +284,31 @@
         SQL.column(data.id),
         ids.map((id) => SQL.literal(id) as any),
       );
-      crossFilter.update({
+      searchSelection.update({
         source: searchFilterSource,
         clients: new Set(),
         predicate: predicate as any,
         value: query,
       });
     } else {
-      crossFilter.update({
+      searchSelection.update({
         source: searchFilterSource,
         clients: new Set(),
         predicate: null,
         value: null,
       });
     }
+    // Spinner pulse on the funnel button. Mosaic doesn't expose a
+    // "cascade settled" event from here, so we use a fixed window
+    // sized to the observed latency (~420ms for the full cascade).
+    // Clear any in-flight timer first so back-to-back publications
+    // (e.g. typing) don't clear the spinner prematurely.
+    if (searchFilterPendingTimer != null) clearTimeout(searchFilterPendingTimer);
+    searchFilterPendingStore.set(true);
+    searchFilterPendingTimer = setTimeout(() => {
+      searchFilterPendingStore.set(false);
+      searchFilterPendingTimer = null;
+    }, 400);
   });
 
   // Filter
@@ -284,6 +319,16 @@
       source?.reset?.();
       crossFilter.update({ ...item, value: null, predicate: null });
     }
+    // Also clear the search clause so a "reset all filters" gesture
+    // covers it. Flipping the funnel off (instead of clearing the
+    // clause here) would leave the user's funnel preference toggled
+    // off — undesirable for a transient reset.
+    searchSelection.update({
+      source: searchFilterSource,
+      clients: new Set(),
+      predicate: null,
+      value: null,
+    });
   }
 
   function loadState(state: EmbeddingAtlasState) {
@@ -419,6 +464,7 @@
   let chartContext: ChartContext = {
     coordinator: coordinator,
     filter: crossFilter,
+    narrowedFilter: narrowedFilter,
     table: data.table,
     id: data.id,
     columns: [],
@@ -434,6 +480,7 @@
     searchMode: searchModeStore,
     searchResultVisible: searchResultVisibleStore,
     searchFilterEnabled: searchFilterEnabledStore,
+    searchFilterPending: searchFilterPendingStore,
     searcherStatus: searcherStatusStore,
     highlight: writable(null),
     embeddingViewConfig: embeddingViewConfig,

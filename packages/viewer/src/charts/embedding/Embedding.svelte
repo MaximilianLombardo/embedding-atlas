@@ -246,6 +246,8 @@
   let searchResultVisibleStore = $derived(context.searchResultVisible ?? writable(false));
   // svelte-ignore state_referenced_locally
   let searcherStatusStore = $derived(context.searcherStatus ?? writable(""));
+  // svelte-ignore state_referenced_locally
+  let searchFilterPendingStore = $derived(context.searchFilterPending ?? writable(false));
   let hasSearch = $derived(
     context.searchQuery != null &&
       context.searchMode != null &&
@@ -261,7 +263,7 @@
     height={height}
     coordinator={context.coordinator}
     table={context.table}
-    filter={context.filter}
+    filter={context.narrowedFilter ?? context.filter}
     rangeSelection={context.filter}
     identifier={context.id}
     x={spec.data.x}
@@ -347,6 +349,7 @@
       onSearchQueryChange={(v) => context.searchQuery!.set(v)}
       searchFilterEnabled={$searchFilterEnabledStore}
       onSearchFilterEnabledChange={(v) => context.searchFilterEnabled!.set(v)}
+      searchFilterPending={$searchFilterPendingStore}
       searchResult={context.searchResult as any}
       searcherStatus={$searcherStatusStore}
       visible={$searchResultVisibleStore}

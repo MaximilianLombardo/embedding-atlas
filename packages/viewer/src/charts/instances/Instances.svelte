@@ -139,11 +139,17 @@
   // ReferenceError on the first run.
   let didInitialScroll = false;
 
+  // The table subscribes to `narrowedFilter` when the host provides
+  // one (it adds the search-filter clause on top of the global
+  // cross-filter). Falling back to `filter` keeps embeds that don't
+  // wire search working unchanged.
+  let tableFilter = $derived(context.narrowedFilter ?? context.filter);
+
   $effect.pre(() => {
     const p = loaderParams;
     const newLoader = new WindowLoader({
       coordinator: context.coordinator,
-      filter: context.filter,
+      filter: tableFilter,
       table: context.table,
       idColumn: context.id,
       query: p.query,
@@ -186,14 +192,41 @@
   $effect.pre(() => {
     const onFilterChange = () => {
       untrack(() => {
+        // Any filter change invalidates the offset cache — offsets
+        // are relative to the active filter. The next precompute
+        // (triggered by fresh search results) repopulates it.
+        loader?.clearOffsetCache();
         loader?.resetToTop();
         (contentView as any)?.scrollToIndex?.(0, "start");
       });
     };
-    context.filter.addEventListener("value", onFilterChange);
+    tableFilter.addEventListener("value", onFilterChange);
     return () => {
-      context.filter.removeEventListener("value", onFilterChange);
+      tableFilter.removeEventListener("value", onFilterChange);
     };
+  });
+
+  // Pre-warm the offset cache for top search results. Fires every
+  // time the search result list changes so the dropdown's clickable
+  // top-N stay click-to-reveal with zero query latency. Deferred via
+  // microtask so the search-filter publication in EmbeddingAtlas
+  // (which also reacts to the same store change) completes first —
+  // otherwise the precompute can race the filter and capture the
+  // stale predicate. PRECOMPUTE_TOP matches the dropdown's
+  // PREVIEW_LIMIT in EmbeddingSearchBar; rows beyond that aren't
+  // clickable from the dropdown UI.
+  const PRECOMPUTE_TOP = 20;
+  // svelte-ignore state_referenced_locally
+  let searchResultStore = $derived(context.searchResult);
+  $effect(() => {
+    const result = $searchResultStore;
+    const l = loader;
+    if (!result || !l) return;
+    const topIds = result.ids.slice(0, PRECOMPUTE_TOP);
+    if (topIds.length === 0) return;
+    queueMicrotask(() => {
+      l.precomputeOffsets(topIds);
+    });
   });
 
   // Initial offset from chartState.offset (D1: persists scroll-to-on-mount).
@@ -334,7 +367,10 @@
   // (where predicate semantics differ) skips this — we hide the
   // menu item below.
   async function handleExportCsv() {
-    const predicate = predicateToString(context.filter.predicate(null) as any);
+    // Use the narrowed predicate so the export matches what's
+    // displayed (including any active search filter), not the global
+    // cross-filter alone.
+    const predicate = predicateToString(tableFilter.predicate(null) as any);
     const [bytes, name] = await exportMosaicSelection(context.coordinator, context.table, predicate, "csv");
     downloadBuffer(bytes, name);
   }

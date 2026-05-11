@@ -52,6 +52,25 @@ export interface ChartContext {
   /** The global cross filter selection. */
   filter: Selection;
 
+  /**
+   * A narrowed view of `filter` that ALSO includes the search-result
+   * clause when the search funnel is active. Charts that should
+   * respect the search filter (table, embedding) read from this when
+   * present and fall back to `filter` otherwise. Charts that should
+   * NOT narrow with search (summary plots, predicate panel,
+   * status-bar count) keep reading `filter` directly — so when the
+   * search clause publishes, only `narrowedFilter`'s subscribers
+   * refire. See EmbeddingAtlas.svelte for construction.
+   */
+  narrowedFilter?: Selection;
+
+  /**
+   * Whether the search filter clause is still propagating to its
+   * subscribers (table + embedding). Used by the search bar to swap
+   * the funnel icon for a spinner while the cascade settles.
+   */
+  searchFilterPending?: Readable<boolean>;
+
   /** The current color scheme. */
   colorScheme: Readable<"light" | "dark">;
 
