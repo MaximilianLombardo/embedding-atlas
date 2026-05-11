@@ -2,6 +2,7 @@
 <script lang="ts">
   import { debounce } from "@embedding-atlas/utils";
   import { Selection } from "@uwdata/mosaic-core";
+  import * as SQL from "@uwdata/mosaic-sql";
   import { onMount, setContext } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { writable } from "svelte/store";
@@ -90,6 +91,22 @@
 
   const crossFilter = Selection.crossfilter();
 
+  // Dedicated single-clause selection that holds ONLY the search
+  // filter chip (when the funnel is on). Publishing here instead of
+  // to `crossFilter` keeps the search clause out of the global
+  // cross-filter state, so charts subscribed to `crossFilter`
+  // directly (CountPlot, Predicates, FilteredCount) don't refire
+  // on every keystroke or toggle.
+  const searchSelection = Selection.single();
+
+  // `crossfilter({ include: [...] })` relays clauses from both
+  // upstream selections into this one. Subscribers (table +
+  // embedding) get the union of brushes + search clause, with the
+  // cross-mode self-skip logic still applied via `clause.clients`.
+  const narrowedFilter = Selection.crossfilter({
+    include: [crossFilter, searchSelection],
+  });
+
   function currentPredicate(): string | null {
     return predicateToString(crossFilter.predicate(null));
   }
@@ -146,11 +163,26 @@
     neighbors: { value: "neighbors", label: "Neighbors" },
   };
 
-  let searchMode = $state<"full-text" | "vector">("full-text");
-
-  let searchQuery = $state("");
-  let searcherStatus = $state("");
-  let searchResultVisible = $state(false);
+  // Search state lives in writable stores rather than `$state` so it
+  // can be passed through `chartContext` to the EmbeddingSearchBar
+  // (which is mounted inside `Embedding.svelte`, on the other side
+  // of LayoutView). Stores are the canonical Svelte way to share
+  // mutable state across component boundaries.
+  let searchModeStore = writable<"full-text" | "vector">("full-text");
+  let searchQueryStore = writable("");
+  let searcherStatusStore = writable("");
+  let searchResultVisibleStore = writable(false);
+  // New: filter-table-to-results toggle. Persisted to localStorage so
+  // the user's preference within the dataset survives reloads.
+  const SEARCH_FILTER_KEY = "embedding-atlas:search-filter";
+  let searchFilterEnabledStore = writable(false);
+  // Pending state for the funnel button's spinner. Goes true when we
+  // publish a search clause, clears after a short fixed window so the
+  // bar doesn't show a frozen spinner if Mosaic finishes faster than
+  // the cascade is visible to the user. Tied to a timer that's reset
+  // whenever a new publication happens.
+  let searchFilterPendingStore = writable(false);
+  let searchFilterPendingTimer: ReturnType<typeof setTimeout> | null = null;
   let searchResultStore = writable<{
     query: any;
     mode: string;
@@ -162,7 +194,7 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
-      searchResultVisible = true;
+      searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
       let searcherResult = await performSearch({
@@ -172,7 +204,7 @@
         mode: mode,
         limit: searchLimit,
         onStatus: (status) => {
-          searcherStatus = status;
+          searcherStatusStore.set(status);
         },
       });
 
@@ -195,7 +227,7 @@
         highlight = "";
       }
 
-      searcherStatus = "";
+      searcherStatusStore.set("");
 
       return {
         query: query,
@@ -215,15 +247,68 @@
 
   function clearSearch() {
     searchResultStore.set(null);
-    searchResultVisible = false;
+    searchResultVisibleStore.set(false);
   }
 
   $effect.pre(() => {
-    if (searchQuery == "") {
+    if ($searchQueryStore == "") {
       clearSearch();
     } else {
-      debouncedSearch(searchQuery, searchMode);
+      debouncedSearch($searchQueryStore, $searchModeStore);
     }
+  });
+
+  // Search-filter publication. When the user opts into filtering via
+  // the search bar's funnel toggle AND there's a non-empty query AND
+  // the searcher has returned at least one result, publish a
+  // `column IN (ids)` predicate to `searchSelection`. Because
+  // `narrowedFilter` includes (relays from) `searchSelection`, the
+  // clause flows to subscribers of `narrowedFilter` (table +
+  // embedding) but NOT to subscribers of `crossFilter` directly
+  // (CountPlot, Predicates, FilteredCount) — reducing the
+  // cross-filter cascade from N clients to 2.
+  //
+  // Source identity pattern mirrors HeaderFilterPopover.svelte —
+  // a stable object so subsequent updates with the same source
+  // replace the existing clause; updating with a `null` predicate
+  // releases it.
+  const searchFilterSource = { __searchFilter: true } as const;
+  $effect(() => {
+    const enabled = $searchFilterEnabledStore;
+    const query = $searchQueryStore;
+    const result = $searchResultStore;
+    const ids = result?.ids ?? [];
+    const shouldFilter = enabled && query !== "" && ids.length > 0;
+    if (shouldFilter) {
+      const predicate = SQL.isIn(
+        SQL.column(data.id),
+        ids.map((id) => SQL.literal(id) as any),
+      );
+      searchSelection.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: predicate as any,
+        value: query,
+      });
+    } else {
+      searchSelection.update({
+        source: searchFilterSource,
+        clients: new Set(),
+        predicate: null,
+        value: null,
+      });
+    }
+    // Spinner pulse on the funnel button. Mosaic doesn't expose a
+    // "cascade settled" event from here, so we use a fixed window
+    // sized to the observed latency (~420ms for the full cascade).
+    // Clear any in-flight timer first so back-to-back publications
+    // (e.g. typing) don't clear the spinner prematurely.
+    if (searchFilterPendingTimer != null) clearTimeout(searchFilterPendingTimer);
+    searchFilterPendingStore.set(true);
+    searchFilterPendingTimer = setTimeout(() => {
+      searchFilterPendingStore.set(false);
+      searchFilterPendingTimer = null;
+    }, 400);
   });
 
   // Filter
@@ -234,6 +319,16 @@
       source?.reset?.();
       crossFilter.update({ ...item, value: null, predicate: null });
     }
+    // Also clear the search clause so a "reset all filters" gesture
+    // covers it. Flipping the funnel off (instead of clearing the
+    // clause here) would leave the user's funnel preference toggled
+    // off — undesirable for a transient reset.
+    searchSelection.update({
+      source: searchFilterSource,
+      clients: new Set(),
+      predicate: null,
+      value: null,
+    });
   }
 
   function loadState(state: EmbeddingAtlasState) {
@@ -369,6 +464,7 @@
   let chartContext: ChartContext = {
     coordinator: coordinator,
     filter: crossFilter,
+    narrowedFilter: narrowedFilter,
     table: data.table,
     id: data.id,
     columns: [],
@@ -380,6 +476,12 @@
     searchModes: searchModes,
     search: doSearch,
     searchResult: searchResultStore,
+    searchQuery: searchQueryStore,
+    searchMode: searchModeStore,
+    searchResultVisible: searchResultVisibleStore,
+    searchFilterEnabled: searchFilterEnabledStore,
+    searchFilterPending: searchFilterPendingStore,
+    searcherStatus: searcherStatusStore,
     highlight: writable(null),
     embeddingViewConfig: embeddingViewConfig,
     embeddingViewLabels: embeddingViewLabels,
@@ -710,6 +812,25 @@
   // registers (mid-session) the modal swaps to the user's intended
   // section.
 
+  // Hydrate searchFilterEnabled from localStorage; subscribe to write
+  // back. searchFilterEnabledStore is declared near the top of this
+  // module (alongside the other search stores) and exposed via
+  // chartContext so the EmbeddingSearchBar in Embedding.svelte can
+  // read + flip it.
+  try {
+    const v = localStorage.getItem(SEARCH_FILTER_KEY);
+    if (v != null) searchFilterEnabledStore.set(v === "true");
+  } catch {
+    /* ignore */
+  }
+  searchFilterEnabledStore.subscribe((v) => {
+    try {
+      localStorage.setItem(SEARCH_FILTER_KEY, v ? "true" : "false");
+    } catch {
+      /* ignore */
+    }
+  });
+
   let mcpStatus = $state.raw<string | undefined>(undefined);
 
   onMount(() => {
@@ -929,8 +1050,8 @@
           MODE
         </div>
         <Select
-          value={searchMode}
-          onChange={(v) => (searchMode = v)}
+          value={$searchModeStore}
+          onChange={(v) => searchModeStore.set(v)}
           options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
         />
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">

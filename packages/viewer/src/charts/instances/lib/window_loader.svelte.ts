@@ -132,6 +132,19 @@ export class WindowLoader {
   private lastAppliedPredicate: SQL.FilterExpr | undefined = undefined;
   private destroyed = false;
 
+  // Cached row offsets for ids the host has pre-warmed via
+  // `precomputeOffsets(ids)`. Lets the search dropdown's
+  // click-to-reveal feel synchronous — no ROW_NUMBER roundtrip per
+  // click. Invalidated by `clearOffsetCache()` when the filter
+  // changes (brush, header filter, search funnel toggle, etc.).
+  private offsetCache: Map<RowID, number> = new Map();
+  // Bumped on every cache invalidation. In-flight precompute
+  // queries capture the generation at kickoff and discard their
+  // results if the generation has moved on — protects against an
+  // older precompute landing AFTER a newer one and overwriting
+  // fresh values with stale ones.
+  private offsetCacheGen: number = 0;
+
   constructor(options: WindowLoaderOptions) {
     this.opts = options;
     this.windowSize = options.windowSize ?? DEFAULT_WINDOW_SIZE;
@@ -308,11 +321,13 @@ export class WindowLoader {
   /**
    * Resolve a row id to its absolute offset under the current sort + filter,
    * via ROW_NUMBER. Returns undefined if the id is no longer in the
-   * filtered set or in custom-query mode.
+   * filtered set or in custom-query mode. Cache hits are synchronous.
    */
   async offsetForId(id: RowID): Promise<number | undefined> {
     if (!this.isOriginalTable) return undefined;
-    const idOffset = SQL.Query.from(this.baseQuery(this.lastAppliedPredicate)).select({
+    const cached = this.offsetCache.get(id);
+    if (cached != null) return cached;
+    const idOffset = SQL.Query.from(this.baseQuery(this.livePredicate())).select({
       id: SQL.column(this.opts.idColumn),
       offset: this.orderByExprs.length > 0 ? SQL.row_number().orderby(...this.orderByExprs) : SQL.row_number(),
     });
@@ -321,6 +336,60 @@ export class WindowLoader {
       .where(SQL.eq(SQL.column("id"), SQL.literal(id)));
     const res = await this.opts.coordinator.query(q);
     return (res as any).get(0)?.offset;
+  }
+
+  /**
+   * Pre-warm the offset cache for a batch of ids. Used by the search
+   * dropdown so clicking a result is synchronous — no ROW_NUMBER
+   * roundtrip at click time. Fire-and-forget; concurrent calls are
+   * safe (results populate the same cache).
+   *
+   * Already-cached ids are skipped. Generation counter discards
+   * in-flight results if the cache is invalidated mid-query
+   * (e.g. user brushes another chart while precompute is running).
+   */
+  async precomputeOffsets(ids: RowID[]): Promise<void> {
+    if (!this.isOriginalTable || ids.length === 0) return;
+    const need = ids.filter((id) => !this.offsetCache.has(id));
+    if (need.length === 0) return;
+    const gen = this.offsetCacheGen;
+    const idOffset = SQL.Query.from(this.baseQuery(this.livePredicate())).select({
+      id: SQL.column(this.opts.idColumn),
+      offset: this.orderByExprs.length > 0 ? SQL.row_number().orderby(...this.orderByExprs) : SQL.row_number(),
+    });
+    const q = SQL.Query.from(idOffset)
+      .select({ id: SQL.column("id"), offset: SQL.column("offset") })
+      .where(SQL.isIn(SQL.column("id"), need.map((id) => SQL.literal(id) as any)));
+    let res: any;
+    try {
+      res = await this.opts.coordinator.query(q);
+    } catch {
+      return;
+    }
+    if (this.destroyed || gen !== this.offsetCacheGen) return;
+    const arr = (res as any).toArray?.() ?? [];
+    for (const row of arr) {
+      if (row?.id != null && typeof row.offset === "number") {
+        this.offsetCache.set(row.id, row.offset);
+      }
+    }
+  }
+
+  /** Clear the offset cache and invalidate any in-flight precompute. */
+  clearOffsetCache(): void {
+    this.offsetCache.clear();
+    this.offsetCacheGen++;
+  }
+
+  /**
+   * Predicate as-of-now from the live filter. Used by offsetForId
+   * and precomputeOffsets — `lastAppliedPredicate` lags by one async
+   * cycle when the search-filter clause publishes, so callers racing
+   * the publication would otherwise capture the wrong predicate.
+   */
+  private livePredicate(): SQL.FilterExpr | undefined {
+    const p = this.opts.filter.predicate(null);
+    return (p ?? undefined) as SQL.FilterExpr | undefined;
   }
 
   /**
