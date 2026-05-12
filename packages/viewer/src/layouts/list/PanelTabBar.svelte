@@ -1,17 +1,17 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  import type { TableTab } from "./types.js";
+  import type { PanelTab } from "./types.js";
 
   interface Props {
-    value: TableTab;
-    onChange: (tab: TableTab) => void;
+    value: PanelTab;
+    onChange: (tab: PanelTab) => void;
   }
 
   let { value, onChange }: Props = $props();
 
-  const options: { value: TableTab; label: string }[] = [
-    { value: "table", label: "Table" },
+  const options: { value: PanelTab; label: string }[] = [
     { value: "chat", label: "Chat" },
+    { value: "charts", label: "Charts" },
   ];
 </script>
 

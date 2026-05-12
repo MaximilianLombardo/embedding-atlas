@@ -88,7 +88,7 @@
 </script>
 
 <div
-  class="w-full h-full flex flex-col overflow-hidden rounded-md bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+  class="w-full h-full flex flex-col overflow-hidden rounded-md bg-white dark:bg-black text-slate-900 dark:text-slate-100"
 >
   <div
     class="flex items-center justify-between px-3 py-1.5 border-b border-slate-200 dark:border-slate-700 gap-4 flex-none"

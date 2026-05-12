@@ -2,7 +2,7 @@
 
 export type Section = "embedding" | "table" | "chart";
 
-export type TableTab = "table" | "chat";
+export type PanelTab = "charts" | "chat";
 
 export interface ListLayoutState {
   showTable?: boolean;
@@ -14,5 +14,5 @@ export interface ListLayoutState {
 
   placements?: Record<string, Section>;
 
-  tableTab?: TableTab;
+  panelTab?: PanelTab;
 }

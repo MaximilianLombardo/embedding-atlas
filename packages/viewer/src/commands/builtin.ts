@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
-import type { TableTab } from "../layouts/list/types.js";
+import type { PanelTab } from "../layouts/list/types.js";
 
 export type CommandGroup = "View" | "Filter" | "Color" | "Chat" | "Export";
 
@@ -21,8 +21,8 @@ export interface BuildCommandsArgs {
   resetFilter: () => void;
   /** Chat is gated; commands depending on it are dropped when false. */
   chatAvailable: boolean;
-  tableTab: TableTab;
-  setTableTab: (tab: TableTab) => void;
+  panelTab: PanelTab;
+  setPanelTab: (tab: PanelTab) => void;
   /** Categorical column names eligible for the Color group (2 ≤ distinct ≤ 50). */
   colorCandidates: string[];
   colorBy: (column: string) => void;
@@ -58,9 +58,9 @@ export function buildCommands(args: BuildCommandsArgs): Command[] {
   if (args.chatAvailable && args.layout === "list") {
     cmds.push({
       id: "view.chat-tab",
-      label: args.tableTab === "chat" ? "Show table tab" : "Show chat tab",
+      label: args.panelTab === "chat" ? "Show charts panel" : "Show chat panel",
       group: "View",
-      run: () => args.setTableTab(args.tableTab === "chat" ? "table" : "chat"),
+      run: () => args.setPanelTab(args.panelTab === "chat" ? "charts" : "chat"),
     });
   }
 
