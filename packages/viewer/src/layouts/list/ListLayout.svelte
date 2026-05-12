@@ -41,14 +41,14 @@
 
   import ChatPanel from "../../widgets/ChatPanel.svelte";
   import ListChartPanel from "./ListChartPanel.svelte";
+  import PanelTabBar from "./PanelTabBar.svelte";
   import Resizer from "./Resizer.svelte";
-  import TableTabBar from "./TableTabBar.svelte";
 
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../../utils/chat_context.js";
   import { findUnusedId } from "../../utils/identifier.js";
   import { reorder } from "../../utils/sort.js";
   import type { LayoutProps } from "../layout.js";
-  import type { ListLayoutState, TableTab } from "./types.js";
+  import type { ListLayoutState, PanelTab } from "./types.js";
 
   let {
     context,
@@ -88,13 +88,16 @@
   let hasTable = $derived(sections.table.length > 0 && (layoutState.showTable ?? true));
   let hasChart = $derived(layoutState.showCharts ?? true);
 
-  // Chat tab is gated on a configured chat backend. Without one, the table
-  // section behaves exactly like before (no tab strip, table fills the slot).
+  // Chat is gated on a configured chat backend. When available, it lives as a
+  // tab inside the right-side panel alongside charts; without a backend the
+  // panel falls back to charts-only with no tab bar. Column visibility itself
+  // follows `hasChart` (the existing show/hide-section control) so the user
+  // can collapse the whole panel exactly as before.
   const chat = getContext<ChatProvider | undefined>(CHAT_CONTEXT_KEY);
   let chatAvailable = $derived(chat != null && chat.endpoint != null);
-  let tableTab: TableTab = $derived(layoutState.tableTab ?? "table");
-  function setTableTab(tab: TableTab) {
-    onStateChange({ tableTab: tab });
+  let panelTab: PanelTab = $derived(layoutState.panelTab ?? "charts");
+  function setPanelTab(tab: PanelTab) {
+    onStateChange({ panelTab: tab });
   }
 
   function chartWidth(total: number, desiredWidth: number) {
@@ -243,7 +246,7 @@
                wheel events that propagate up past the table's
                scrollEl (when scrollEl is at its scroll limit) would
                scroll the outer's hidden overflow, shifting the inner
-               UP and pulling the TableTabBar / Instances toolbar OUT
+               UP and pulling the Instances toolbar OUT
                of view with no way to scroll back. `clip` clips
                visually without making the element scrollable, so
                wheel chains naturally bubble past it.
@@ -259,43 +262,17 @@
             style:height="{hasTable ? tblH : 0}px"
             style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
           >
-            <!-- Inner height: pinned to `containerHeight` for the table tab
-                 to keep the virtualizer's ResizeObserver stable during
-                 pane show/hide tweens (see outer comment above). The chat
-                 tab has no virtualizer and renders an `h-full flex flex-col`
-                 panel whose composer sits at the bottom — pinning it tall
-                 would push the composer below the outer's visible clip. So
-                 when chat is active, size the inner to the visible region
-                 (`tblH`) instead. -->
-            <div
-              class="flex flex-col gap-1 overflow-clip min-h-0"
-              style:height="{chatAvailable && tableTab === 'chat' ? tblH : containerHeight}px"
-            >
-              {#if chatAvailable}
-                <div class="flex-none flex items-center gap-2 px-1">
-                  <TableTabBar value={tableTab} onChange={setTableTab} />
-                </div>
-              {/if}
-              {#if chatAvailable && tableTab === "chat" && chat != null}
-                <div class="flex-1 overflow-hidden rounded-md min-h-0">
-                  <ChatPanel
-                    coordinator={context.coordinator}
-                    table={context.table}
-                    filter={context.filter}
-                    highlight={context.highlight}
-                    chartContext={context}
-                    onSaveChart={saveInlineChartToPanel}
-                  />
-                </div>
-              {:else}
-                <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
-                  {#each sections.table as id (id)}
-                    <div class="flex-1 overflow-hidden rounded-md">
-                      {@render chartView({ id: id, width: "container", height: "container" })}
-                    </div>
-                  {/each}
-                </div>
-              {/if}
+            <!-- Inner pinned to containerHeight: see the outer comment
+                 above. Chat is no longer hosted here — it lives in the
+                 right-side panel — so this can stay unconditional. -->
+            <div class="flex flex-col gap-1 overflow-clip min-h-0" style:height="{containerHeight}px">
+              <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
+                {#each sections.table as id (id)}
+                  <div class="flex-1 overflow-hidden rounded-md">
+                    {@render chartView({ id: id, width: "container", height: "container" })}
+                  </div>
+                {/each}
+              </div>
             </div>
           </div>
         {/if}
@@ -314,54 +291,83 @@
         onDragEnd={() => (isResizing = false)}
       />
     {/if}
-    <!-- Right side: charts -->
+    <!-- Right side: charts + chat. Column visibility follows the
+         "show charts" setting so the existing show/hide control
+         expands and collapses the whole panel as before. The tab bar
+         is rendered only when a chat backend is configured; without
+         one, charts fill the column with no tab bar (preserves the
+         chart-only experience for deployments without chat). -->
     {#if hasChart}
       <div
-        class="h-full overflow-x-hidden overflow-y-scroll"
+        class="h-full flex flex-col"
         style:width="{hasEmbedding || hasTable ? panelWidth : containerWidth}px"
         transition:slide={{ axis: "x" }}
       >
-        <div class="flex flex-row flex-wrap gap-2" bind:clientWidth={panelContainerWidth}>
-          <button
-            class="bg-white dark:bg-black rounded-md flex flex-col justify-center items-center gap-2 p-2 w-full text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 select-none"
-            onclick={() => {
-              let id = findUnusedId(charts);
-              onChartsChange({ [id]: { type: "builder", title: "New" } });
-              onStateChange({ chartsOrder: [id, ...chartsOrder.filter((x) => x != id)] });
-            }}
-          >
-            + Add
-          </button>
-          {#each chartsOrder as id, index (id)}
-            {@const spec = charts[id]}
-            {@const isVisible = layoutState.chartVisibility?.[id] ?? true}
-            <div
-              class="bg-white dark:bg-black rounded-md flex flex-col group"
-              style:width="{chartWidth(panelContainerWidth, 500)}px"
-              animate:flip={{ duration: 300 }}
-              out:slide
-            >
-              <ListChartPanel
-                id={id}
-                spec={spec}
-                onIsVisibleChange={(v) => {
-                  onStateChange({ chartVisibility: { [id]: v } });
+        {#if chatAvailable}
+          <div class="flex-none flex items-center gap-2 px-1 py-1">
+            <PanelTabBar value={panelTab} onChange={setPanelTab} />
+          </div>
+        {/if}
+        {#if chatAvailable && panelTab === "chat" && chat != null}
+          <div class="flex-1 min-h-0 overflow-hidden rounded-md">
+            <ChatPanel
+              coordinator={context.coordinator}
+              table={context.table}
+              filter={context.filter}
+              highlight={context.highlight}
+              chartContext={context}
+              onSaveChart={saveInlineChartToPanel}
+            />
+          </div>
+        {:else}
+          <!-- The charts grid keeps its previous overflow behavior — the
+               outer scroller moved from the column to here so chat can
+               use a flex slot without inheriting an unwanted vertical
+               scrollbar. -->
+          <div class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
+            <div class="flex flex-row flex-wrap gap-2" bind:clientWidth={panelContainerWidth}>
+              <button
+                class="bg-white dark:bg-black rounded-md flex flex-col justify-center items-center gap-2 p-2 w-full text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 select-none"
+                onclick={() => {
+                  let id = findUnusedId(charts);
+                  onChartsChange({ [id]: { type: "builder", title: "New" } });
+                  onStateChange({ chartsOrder: [id, ...chartsOrder.filter((x) => x != id)] });
                 }}
-                isVisible={isVisible}
-                colorScheme={$colorScheme}
-                chartView={chartView}
-                onRemove={removeChart.bind(null, id)}
-                onUp={index > 0 ? reorderCharts.bind(null, id, -1) : undefined}
-                onDown={index + 1 < chartsOrder.length ? reorderCharts.bind(null, id, 1) : undefined}
-                onSpecChange={(spec) => {
-                  onChartsChange({ [id]: undefined });
-                  onChartStatesChange({ [id]: undefined });
-                  onChartsChange({ [id]: spec });
-                }}
-              />
+              >
+                + Add
+              </button>
+              {#each chartsOrder as id, index (id)}
+                {@const spec = charts[id]}
+                {@const isVisible = layoutState.chartVisibility?.[id] ?? true}
+                <div
+                  class="bg-white dark:bg-black rounded-md flex flex-col group"
+                  style:width="{chartWidth(panelContainerWidth, 500)}px"
+                  animate:flip={{ duration: 300 }}
+                  out:slide
+                >
+                  <ListChartPanel
+                    id={id}
+                    spec={spec}
+                    onIsVisibleChange={(v) => {
+                      onStateChange({ chartVisibility: { [id]: v } });
+                    }}
+                    isVisible={isVisible}
+                    colorScheme={$colorScheme}
+                    chartView={chartView}
+                    onRemove={removeChart.bind(null, id)}
+                    onUp={index > 0 ? reorderCharts.bind(null, id, -1) : undefined}
+                    onDown={index + 1 < chartsOrder.length ? reorderCharts.bind(null, id, 1) : undefined}
+                    onSpecChange={(spec) => {
+                      onChartsChange({ [id]: undefined });
+                      onChartStatesChange({ [id]: undefined });
+                      onChartsChange({ [id]: spec });
+                    }}
+                  />
+                </div>
+              {/each}
             </div>
-          {/each}
-        </div>
+          </div>
+        {/if}
       </div>
     {/if}
   {:else}

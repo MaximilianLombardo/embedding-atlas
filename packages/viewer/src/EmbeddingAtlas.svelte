@@ -39,7 +39,7 @@
   import { defaultCharts } from "./charts/default_charts.js";
   import { buildCommands } from "./commands/builtin.js";
   import { EMBEDDING_ATLAS_VERSION } from "./constants.js";
-  import { type TableTab } from "./layouts/list/types.js";
+  import { type PanelTab } from "./layouts/list/types.js";
   import { provideModelContext } from "./model_context/model_context.js";
   import { type ColumnStyle } from "./renderers/types.js";
   import { performSearch, querySearchResultItems, resolveSearcher, type SearchResultItem } from "./search/search.js";
@@ -567,10 +567,10 @@
   let layout = $state.raw<string>("list");
   let layoutStates = $state.raw<Record<string, any>>({});
 
-  let tableTab = $derived((layoutStates.list?.tableTab ?? "table") as TableTab);
+  let panelTab = $derived((layoutStates.list?.panelTab ?? "charts") as PanelTab);
 
-  function setTableTab(tab: TableTab) {
-    layoutStates = { ...layoutStates, list: { ...(layoutStates.list ?? {}), tableTab: tab } };
+  function setPanelTab(tab: PanelTab) {
+    layoutStates = { ...layoutStates, list: { ...(layoutStates.list ?? {}), panelTab: tab } };
   }
 
   let colorCandidates = $derived(
@@ -601,8 +601,8 @@
       toggleDarkMode: () => ($userColorScheme = $colorScheme === "light" ? "dark" : "light"),
       resetFilter,
       chatAvailable: chatProvider.endpoint != null,
-      tableTab,
-      setTableTab,
+      panelTab,
+      setPanelTab,
       colorCandidates,
       colorBy: colorEmbeddingBy,
     }),
