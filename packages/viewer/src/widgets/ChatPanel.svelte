@@ -8,12 +8,20 @@
   import ChatView from "./ChatView.svelte";
 
   import type { ChartContext, RowID } from "../charts/chart.js";
+  import type { ChatTurn } from "../utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../utils/chat_context.js";
 
   interface Props {
     coordinator: Coordinator;
     table: string;
     filter: Selection;
+    /**
+     * Conversation history for THIS chat tab. Bindable so streaming
+     * responses (which mutate the array in place and append turns)
+     * propagate back to the owner. Multi-chat: the host (`ListLayout`)
+     * keeps one of these per chat tab and binds the active one.
+     */
+    turns?: ChatTurn[];
     /**
      * Chart-context highlight Writable. Pill clicks on chat citations
      * write into this; the existing animate-to-point flow + Instances
@@ -40,7 +48,15 @@
     onSaveChart?: (spec: any) => void;
   }
 
-  let { coordinator, table, filter, highlight, chartContext, onSaveChart }: Props = $props();
+  let {
+    coordinator,
+    table,
+    filter,
+    highlight,
+    chartContext,
+    onSaveChart,
+    turns = $bindable([]),
+  }: Props = $props();
 
   function onPillClick(rowId: RowID) {
     // Replace any existing highlight with just this row. The embedding
@@ -83,7 +99,7 @@
   });
 
   function clearChat() {
-    chat.state.turns = [];
+    turns = [];
   }
 </script>
 
@@ -96,7 +112,7 @@
     <div class="text-xs text-slate-500 dark:text-slate-400 select-none">{badge}</div>
     <button
       class="text-xs px-2 py-1 rounded-md text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
-      disabled={chat.state.turns.length === 0}
+      disabled={turns.length === 0}
       onclick={clearChat}
       title="Clear chat history"
     >
@@ -107,7 +123,7 @@
     <ChatView
       endpoint={chat.endpoint}
       context={chat.context}
-      bind:turns={chat.state.turns}
+      bind:turns
       {onPillClick}
       {chartContext}
       {onSaveChart}

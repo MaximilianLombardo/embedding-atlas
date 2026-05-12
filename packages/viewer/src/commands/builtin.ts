@@ -1,7 +1,5 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
-import type { PanelTab } from "../layouts/list/types.js";
-
 export type CommandGroup = "View" | "Filter" | "Color" | "Chat" | "Export";
 
 export interface Command {
@@ -21,8 +19,11 @@ export interface BuildCommandsArgs {
   resetFilter: () => void;
   /** Chat is gated; commands depending on it are dropped when false. */
   chatAvailable: boolean;
-  panelTab: PanelTab;
-  setPanelTab: (tab: PanelTab) => void;
+  /** Active right-panel tab — "chat" or a Canvas.id. */
+  panelTab: string;
+  setPanelTab: (tab: string) => void;
+  /** First canvas-kind tab id; the chat-toggle flips between the active tab and this. */
+  firstCanvasTabId: string;
   /** Categorical column names eligible for the Color group (2 ≤ distinct ≤ 50). */
   colorCandidates: string[];
   colorBy: (column: string) => void;
@@ -56,11 +57,13 @@ export function buildCommands(args: BuildCommandsArgs): Command[] {
   });
 
   if (args.chatAvailable && args.layout === "list") {
+    // Toggle between the first chat tab (id "chat" matches the
+    // default seeded chat tab) and the first canvas-kind tab.
     cmds.push({
       id: "view.chat-tab",
-      label: args.panelTab === "chat" ? "Show charts panel" : "Show chat panel",
+      label: args.panelTab === "chat" ? "Show canvases" : "Show chat panel",
       group: "View",
-      run: () => args.setPanelTab(args.panelTab === "chat" ? "charts" : "chat"),
+      run: () => args.setPanelTab(args.panelTab === "chat" ? args.firstCanvasTabId : "chat"),
     });
   }
 

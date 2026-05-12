@@ -41,14 +41,15 @@
 
   import ChatPanel from "../../widgets/ChatPanel.svelte";
   import ListChartPanel from "./ListChartPanel.svelte";
-  import PanelTabBar from "./PanelTabBar.svelte";
+  import PanelTabBar, { type AddKind, type PanelTabInfo } from "./PanelTabBar.svelte";
   import Resizer from "./Resizer.svelte";
 
+  import type { ChatTurn } from "../../utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../../utils/chat_context.js";
   import { findUnusedId } from "../../utils/identifier.js";
   import { reorder } from "../../utils/sort.js";
   import type { LayoutProps } from "../layout.js";
-  import type { ListLayoutState, PanelTab } from "./types.js";
+  import type { CanvasTab, ChatTab, ListLayoutState, Tab } from "./types.js";
 
   let {
     context,
@@ -70,14 +71,10 @@
   let panelWidth = $state(400);
   let panelContainerWidth = $state(400);
 
-  // True while the user is actively dragging EITHER the embedding/table
-  // resizer or the left/right (main/charts) resizer. The pane outers'
-  // `transition: height 300 ms` looks great for the show/hide toggles
-  // but produces a 300 ms lag during drag — each pointermove sets a
-  // new target which the browser starts a fresh tween toward, so the
-  // pane chases the cursor instead of tracking it. We suppress the
-  // CSS transition while `isResizing` is true. The same flag covers
-  // both resizers because either drag wants instant pane updates.
+  // True while the user is actively dragging either the embedding/table
+  // resizer or the left/right (main/panel) resizer. Suppresses the
+  // pane outers' `transition: height 300 ms` during drag so the panes
+  // track the cursor instead of chasing a moving target.
   let isResizing = $state(false);
 
   let sections = $derived.by(deepMemo(() => getSections(charts, layoutState)));
@@ -88,17 +85,188 @@
   let hasTable = $derived(sections.table.length > 0 && (layoutState.showTable ?? true));
   let hasChart = $derived(layoutState.showCharts ?? true);
 
-  // Chat is gated on a configured chat backend. When available, it lives as a
-  // tab inside the right-side panel alongside charts; without a backend the
-  // panel falls back to charts-only with no tab bar. Column visibility itself
-  // follows `hasChart` (the existing show/hide-section control) so the user
-  // can collapse the whole panel exactly as before.
+  // Chat is gated on a configured chat backend. When available, the
+  // tab strip seeds a default Chat tab; without one, the strip is
+  // canvases-only and the `+` popover collapses to "New canvas".
   const chat = getContext<ChatProvider | undefined>(CHAT_CONTEXT_KEY);
   let chatAvailable = $derived(chat != null && chat.endpoint != null);
-  let panelTab: PanelTab = $derived(layoutState.panelTab ?? "charts");
-  function setPanelTab(tab: PanelTab) {
-    onStateChange({ panelTab: tab });
+
+  // Unified tab list. Migration: if `layoutState.tabs` is missing
+  // (pre-tabs state), seed a Chat tab (when available) followed by
+  // a Canvas 1 that absorbs the legacy top-level chartsOrder /
+  // chartVisibility so the user's prior layout survives the upgrade.
+  let tabs = $derived.by(
+    deepMemo((): Tab[] => {
+      if (layoutState.tabs && layoutState.tabs.length > 0) return layoutState.tabs;
+
+      const out: Tab[] = [];
+      if (chatAvailable) {
+        out.push({ kind: "chat", id: "chat", name: "Chat" });
+      }
+      out.push({
+        kind: "canvas",
+        id: "canvas-1",
+        name: "Canvas 1",
+        chartsOrder: layoutState.chartsOrder ?? [],
+        chartVisibility: layoutState.chartVisibility,
+      });
+      return out;
+    }),
+  );
+
+  // Per-chat-tab conversation history, kept LOCAL to this component
+  // instead of inside `layoutState.tabs` because `layoutStates` upstream
+  // is `$state.raw` — deep in-place mutations (which the streaming
+  // response code performs on the turns array) wouldn't propagate
+  // through a raw state object. Today's chat is in-memory only, so this
+  // also preserves that invariant. A future "persist chat history" pass
+  // can lift these arrays into layoutState explicitly.
+  let chatTurns: Record<string, ChatTurn[]> = $state({});
+
+  // Ensure every chat tab has an entry in `chatTurns`. Runs on tab
+  // changes — covers the initial seed, every addChat, and the case
+  // where persisted state lists chat tabs we haven't seen yet this
+  // session (reloads).
+  $effect.pre(() => {
+    for (const t of tabs) {
+      if (t.kind === "chat" && !(t.id in chatTurns)) {
+        chatTurns[t.id] = [];
+      }
+    }
+  });
+
+  // Active tab. Falls back to the first tab when the persisted id no
+  // longer maps to a live tab (e.g. that tab was deleted in a previous
+  // session).
+  let panelTab: string = $derived.by(() => {
+    const saved = layoutState.panelTab;
+    if (saved != null && tabs.some((t) => t.id === saved)) return saved;
+    return tabs[0]?.id ?? "canvas-1";
+  });
+
+  let activeTab: Tab | undefined = $derived(tabs.find((t) => t.id === panelTab) ?? tabs[0]);
+  let activeCanvas: CanvasTab | undefined = $derived(
+    activeTab?.kind === "canvas" ? activeTab : undefined,
+  );
+
+  function setPanelTab(id: string) {
+    onStateChange({ panelTab: id });
   }
+
+  // --- Tab operations --------------------------------------------------
+
+  function writeTabs(next: Tab[]) {
+    onStateChange({ tabs: next });
+  }
+
+  function updateTab(id: string, updater: (t: Tab) => Tab) {
+    let touched = false;
+    const next = tabs.map((t) => {
+      if (t.id !== id) return t;
+      touched = true;
+      return updater(t);
+    });
+    if (touched) writeTabs(next);
+  }
+
+  function updateActiveCanvas(updater: (c: CanvasTab) => CanvasTab) {
+    if (activeCanvas == null) return;
+    updateTab(activeCanvas.id, (t) => updater(t as CanvasTab));
+  }
+
+  /** Allocate an auto-name "Kind N" where N is one past the highest
+   *  existing N for tabs of that kind matching the default pattern. */
+  function nextAutoName(kind: "canvas" | "chat"): string {
+    const prefix = kind === "canvas" ? "Canvas" : "Chat";
+    const re = new RegExp("^" + prefix + " (\\d+)$");
+    let maxN = 0;
+    let countOfKind = 0;
+    for (const t of tabs) {
+      if (t.kind !== kind) continue;
+      countOfKind++;
+      const m = t.name.match(re);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > maxN) maxN = n;
+      }
+    }
+    return `${prefix} ${Math.max(maxN + 1, countOfKind + 1)}`;
+  }
+
+  function existingTabIds(): Record<string, true> {
+    const out: Record<string, true> = {};
+    for (const t of tabs) out[t.id] = true;
+    return out;
+  }
+
+  function addCanvas() {
+    const id = findUnusedId(existingTabIds(), "canvas-");
+    const name = nextAutoName("canvas");
+    writeTabs([...tabs, { kind: "canvas", id, name, chartsOrder: [] }]);
+    setPanelTab(id);
+  }
+
+  function addChat() {
+    const id = findUnusedId(existingTabIds(), "chat-");
+    const name = nextAutoName("chat");
+    writeTabs([...tabs, { kind: "chat", id, name }]);
+    chatTurns[id] = [];
+    setPanelTab(id);
+  }
+
+  function addByKind(kind: AddKind) {
+    if (kind === "chat") addChat();
+    else addCanvas();
+  }
+
+  function renameTab(id: string, name: string) {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+    updateTab(id, (t) => ({ ...t, name: trimmed }));
+  }
+
+  function deleteTab(id: string) {
+    const idx = tabs.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const removed = tabs[idx];
+
+    if (removed.kind === "canvas") {
+      // Drop the canvas's chart specs from the global stores. Charts
+      // belong to exactly one canvas in v1, so a canvas delete is also
+      // a delete of every chart it owned.
+      const chartUpdates: Record<string, undefined> = {};
+      const stateUpdates: Record<string, undefined> = {};
+      for (const chartId of removed.chartsOrder) {
+        chartUpdates[chartId] = undefined;
+        stateUpdates[chartId] = undefined;
+      }
+      if (removed.chartsOrder.length > 0) {
+        onChartsChange(chartUpdates);
+        onChartStatesChange(stateUpdates);
+      }
+    } else {
+      // Drop the chat's turns from the local map. If a stream was in
+      // flight against this array it'll continue mutating the
+      // (now-orphaned) array; harmless since nothing references it.
+      delete chatTurns[id];
+    }
+
+    let next = tabs.filter((t) => t.id !== id);
+    // Never let the state go to zero tabs — auto-create a fresh empty
+    // Canvas 1 so the `+` and chart-add affordances stay available.
+    if (next.length === 0) {
+      next = [{ kind: "canvas", id: "canvas-1", name: "Canvas 1", chartsOrder: [] }];
+    }
+    writeTabs(next);
+
+    // If the deleted tab was active, jump to the previous one.
+    if (panelTab === id) {
+      const neighbor = next[Math.max(0, idx - 1)];
+      setPanelTab(neighbor.id);
+    }
+  }
+
+  // --- Chart operations (scoped to the active canvas tab) ---------------
 
   function chartWidth(total: number, desiredWidth: number) {
     const gap = 7;
@@ -116,73 +284,101 @@
     return Math.floor((minWidth ?? 400) * 2) / 2; // Round to multiple of 0.5
   }
 
-  let chartsOrder = $derived.by(deepMemo(() => reorder(sections.chart, layoutState.chartsOrder)));
+  // Chart ids actually present on the active canvas, ordered. `reorder`
+  // drops dangling ids (charts removed from the global store) and
+  // appends specs that arrived without an explicit position.
+  let activeChartsOrder = $derived.by(
+    deepMemo(() => {
+      if (activeCanvas == null) return [] as string[];
+      return reorder(
+        sections.chart.filter((id) => activeCanvas!.chartsOrder.includes(id)),
+        activeCanvas.chartsOrder,
+      );
+    }),
+  );
 
   function reorderCharts(id: string, shift: number) {
-    let newOrder = [...chartsOrder];
-    let index = newOrder.indexOf(id);
-    if (index == -1) {
-      return;
-    }
-    let targetIndex = index + shift;
-    if (targetIndex < 0 || targetIndex >= newOrder.length) {
-      return;
-    }
-    [newOrder[index], newOrder[targetIndex]] = [newOrder[targetIndex], newOrder[index]];
-    onStateChange({ chartsOrder: newOrder });
+    if (activeCanvas == null) return;
+    const order = activeChartsOrder;
+    const index = order.indexOf(id);
+    if (index < 0) return;
+    const targetIndex = index + shift;
+    if (targetIndex < 0 || targetIndex >= order.length) return;
+    const next = [...order];
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    updateActiveCanvas((c) => ({ ...c, chartsOrder: next }));
   }
 
   function removeChart(id: string) {
     onChartsChange({ [id]: undefined });
     onChartStatesChange({ [id]: undefined });
+    updateActiveCanvas((c) => ({
+      ...c,
+      chartsOrder: c.chartsOrder.filter((x) => x !== id),
+      chartVisibility: c.chartVisibility ? omit(c.chartVisibility, id) : c.chartVisibility,
+    }));
+  }
+
+  function setChartVisibility(id: string, visible: boolean) {
+    updateActiveCanvas((c) => ({
+      ...c,
+      chartVisibility: { ...(c.chartVisibility ?? {}), [id]: visible },
+    }));
+  }
+
+  function addNewChart() {
+    if (activeCanvas == null) return;
+    const id = findUnusedId(charts);
+    onChartsChange({ [id]: { type: "builder", title: "New" } });
+    updateActiveCanvas((c) => ({
+      ...c,
+      chartsOrder: [id, ...c.chartsOrder.filter((x) => x !== id)],
+    }));
   }
 
   /**
-   * Promote an inline chart from the chat to a persistent side-panel chart.
-   * Triggered by the "Add to panel" button on each InlineChartView. Mirrors
-   * the +Add button behavior: allocate an unused id, slot the spec in, and
-   * push it to the front of the chartsOrder so the user sees it right away.
+   * Promote an inline chart from the chat into a persistent canvas.
+   * Triggered by "Add to panel" on InlineChartView. Routes to the
+   * active canvas if one is active, else the first canvas tab. If no
+   * canvas exists (unlikely — we keep at least one), auto-create one.
    */
   function saveInlineChartToPanel(spec: any) {
-    let id = findUnusedId(charts);
+    const id = findUnusedId(charts);
     onChartsChange({ [id]: spec });
-    onStateChange({ chartsOrder: [id, ...chartsOrder.filter((x) => x != id)] });
+    let targetId = activeCanvas?.id ?? tabs.find((t) => t.kind === "canvas")?.id;
+    if (targetId == null) {
+      addCanvas();
+      targetId = tabs[tabs.length]?.id;
+      if (targetId == null) return;
+    }
+    updateTab(targetId, (t) => {
+      if (t.kind !== "canvas") return t;
+      return { ...t, chartsOrder: [id, ...t.chartsOrder.filter((x) => x !== id)] };
+    });
   }
+
+  function omit<T extends Record<string, any>>(obj: T, key: string): T {
+    if (!(key in obj)) return obj;
+    const { [key]: _drop, ...rest } = obj;
+    return rest as T;
+  }
+
+  // --- Tab strip wiring -------------------------------------------------
+
+  let panelTabInfos: PanelTabInfo[] = $derived.by(() => {
+    return tabs.map((t) => ({
+      id: t.id,
+      label: t.name,
+      kind: t.kind,
+      renamable: true,
+      removable: true,
+    }));
+  });
 </script>
 
 <div class="w-full h-full flex flex-row" bind:clientWidth={containerWidth} bind:clientHeight={containerHeight}>
   {#if !isMobileLayout}
-    <!-- Desktop layout -->
-    <!-- Left side: embedding / table. Both panes are kept mounted
-         across show/hide so the expensive setup work (Mosaic + WebGL
-         on the embedding side; table-core + virtualizer + filter
-         popovers on the table side) is paid once on first appearance,
-         not on every toggle.
-
-         Both panes use explicit px heights so CSS transitions have
-         interpolatable endpoints in every direction (browsers don't
-         animate from `auto`/flex-determined to a fixed value). The
-         heights are computed so they always sum to containerHeight:
-
-           hasEmbedding + hasTable:   emb = cH − tH − 8, table = tH
-           hasEmbedding only:         emb = cH, table = 0
-           hasTable only:             emb = 0, table = cH
-
-         Inner wrappers use `h-full` so the chart content follows the
-         outer's currently-animated height every frame, instead of
-         snapping to a new "stable size" the moment the OTHER pane's
-         visibility flips. The previous "fixed inner height" was
-         supposed to keep the embedding canvas / table virtualizer
-         from re-measuring during a transition, but because that
-         fixed value depended on `hasEmbedding` / `hasTable`, any
-         cross-pane toggle made the inner SNAP at frame 0 — that's
-         what produced the jitter the user reported on
-         hide-embedding-while-table-visible and hide-table-while-
-         embedding-visible. Letting the inner track the animated
-         outer trades a tiny per-frame re-render (cheap: WebGL
-         viewport change + virtualizer range recompute) for visually
-         smooth motion that matches the chart-panel/embedding
-         interaction the user pointed at as the target. -->
+    <!-- Desktop layout. Left side: embedding / table. -->
     {#if hasEmbedding || hasTable}
       <div class="flex-1 flex flex-col overflow-hidden">
         {#if sections.embedding.length > 0}
@@ -201,9 +397,9 @@
             </div>
           </div>
         {/if}
-        <!-- Resizer: always mounted; height collapses to 0 when
-             either pane is hidden so the 8 px drag handle fades
-             alongside the pane animations rather than popping. -->
+        <!-- 8 px drag handle between embedding and table. Collapses to
+             0 when either pane is hidden so it fades along with the
+             pane rather than popping. -->
         <div
           class="flex-none overflow-hidden"
           style:height="{hasEmbedding && hasTable ? 8 : 0}px"
@@ -223,48 +419,14 @@
         </div>
         {#if sections.table.length > 0}
           {@const tblH = hasEmbedding ? tableHeight : containerHeight}
-          <!-- Table wrapper. The inner is intentionally PINNED to
-               containerHeight (not h-full of the animated outer) so the
-               @tanstack/svelte-virtual ResizeObserver sees a stable
-               scroll-element height through every transition. Without
-               this, every animation frame would invalidate the
-               virtualizer's visible range and mount one fresh row's
-               worth of cells (~40 ContentRenderers × ~18 frames ≈ 720
-               renders during a 300 ms animation), which the user can
-               see as table-content jitter while the outer is growing
-               or shrinking.
-
-               Cost: when embedding is also visible the inner extends
-               below the outer's clipped bottom — the virtualizer
-               renders a few rows that aren't on screen. Cheap (they're
-               static once mounted), and the user-visible scroll
-               behavior is identical: wheel events on the visible
-               portion still drive scrollEl's scrollTop the same way.
-
-               IMPORTANT: outer uses `overflow-clip`, NOT `overflow-
-               hidden`. `hidden` still creates a scroll container —
-               wheel events that propagate up past the table's
-               scrollEl (when scrollEl is at its scroll limit) would
-               scroll the outer's hidden overflow, shifting the inner
-               UP and pulling the Instances toolbar OUT
-               of view with no way to scroll back. `clip` clips
-               visually without making the element scrollable, so
-               wheel chains naturally bubble past it.
-
-               Doesn't apply to the embedding's inner: the WebGL
-               scatter NEEDS to render at its visible size (otherwise
-               the bottom of the plot is cropped), so the embedding's
-               inner stays at h-full and pays a per-frame WebGL
-               viewport change — which is cheap O(1) vs the
-               virtualizer's per-frame row-mount. -->
+          <!-- Inner pinned to containerHeight so the @tanstack/svelte-
+               virtual ResizeObserver sees a stable scroll-element
+               height through pane transitions. -->
           <div
             class="overflow-clip flex-none"
             style:height="{hasTable ? tblH : 0}px"
             style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
           >
-            <!-- Inner pinned to containerHeight: see the outer comment
-                 above. Chat is no longer hosted here — it lives in the
-                 right-side panel — so this can stay unconditional. -->
             <div class="flex flex-col gap-1 overflow-clip min-h-0" style:height="{containerHeight}px">
               <div class="flex flex-row gap-2 overflow-hidden flex-1 min-h-0">
                 {#each sections.table as id (id)}
@@ -291,54 +453,59 @@
         onDragEnd={() => (isResizing = false)}
       />
     {/if}
-    <!-- Right side: charts + chat. Column visibility follows the
-         "show charts" setting so the existing show/hide control
-         expands and collapses the whole panel as before. The tab bar
-         is rendered only when a chat backend is configured; without
-         one, charts fill the column with no tab bar (preserves the
-         chart-only experience for deployments without chat). -->
+    <!-- Right side: tab strip + active-tab content. Column visibility
+         follows the "show charts" setting so the existing show/hide
+         control expands and collapses the whole panel as before. -->
     {#if hasChart}
       <div
         class="h-full flex flex-col"
         style:width="{hasEmbedding || hasTable ? panelWidth : containerWidth}px"
         transition:slide={{ axis: "x" }}
       >
-        {#if chatAvailable}
-          <div class="flex-none flex items-center gap-2 px-1 py-1">
-            <PanelTabBar value={panelTab} onChange={setPanelTab} />
-          </div>
-        {/if}
-        {#if chatAvailable && panelTab === "chat" && chat != null}
-          <div class="flex-1 min-h-0 overflow-hidden rounded-md">
-            <ChatPanel
-              coordinator={context.coordinator}
-              table={context.table}
-              filter={context.filter}
-              highlight={context.highlight}
-              chartContext={context}
-              onSaveChart={saveInlineChartToPanel}
-            />
-          </div>
-        {:else}
-          <!-- The charts grid keeps its previous overflow behavior — the
-               outer scroller moved from the column to here so chat can
-               use a flex slot without inheriting an unwanted vertical
-               scrollbar. -->
+        <div class="flex-none flex items-center gap-2 px-1 py-1">
+          <PanelTabBar
+            tabs={panelTabInfos}
+            activeId={panelTab}
+            onActivate={setPanelTab}
+            onAdd={addByKind}
+            onRename={renameTab}
+            onDelete={deleteTab}
+            chatAvailable={chatAvailable}
+          />
+        </div>
+        {#if activeTab?.kind === "chat"}
+          <!-- Remount on tab switch: each chat tab's ChatPanel
+               captures its own turns array reference at mount time.
+               A new chat tab activates → new ChatPanel instance
+               binds to that tab's `chatTurns[id]`. Inflight streams
+               in unmounted chat tabs continue against their captured
+               array; when the user returns, the new mount reads the
+               latest state. -->
+          {#key activeTab.id}
+            <div class="flex-1 min-h-0 overflow-hidden rounded-md">
+              <ChatPanel
+                coordinator={context.coordinator}
+                table={context.table}
+                filter={context.filter}
+                highlight={context.highlight}
+                chartContext={context}
+                onSaveChart={saveInlineChartToPanel}
+                bind:turns={chatTurns[activeTab.id]}
+              />
+            </div>
+          {/key}
+        {:else if activeCanvas != null}
           <div class="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
             <div class="flex flex-row flex-wrap gap-2" bind:clientWidth={panelContainerWidth}>
               <button
                 class="bg-white dark:bg-black rounded-md flex flex-col justify-center items-center gap-2 p-2 w-full text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 select-none"
-                onclick={() => {
-                  let id = findUnusedId(charts);
-                  onChartsChange({ [id]: { type: "builder", title: "New" } });
-                  onStateChange({ chartsOrder: [id, ...chartsOrder.filter((x) => x != id)] });
-                }}
+                onclick={addNewChart}
               >
                 + Add
               </button>
-              {#each chartsOrder as id, index (id)}
+              {#each activeChartsOrder as id, index (id)}
                 {@const spec = charts[id]}
-                {@const isVisible = layoutState.chartVisibility?.[id] ?? true}
+                {@const isVisible = activeCanvas.chartVisibility?.[id] ?? true}
                 <div
                   class="bg-white dark:bg-black rounded-md flex flex-col group"
                   style:width="{chartWidth(panelContainerWidth, 500)}px"
@@ -348,15 +515,13 @@
                   <ListChartPanel
                     id={id}
                     spec={spec}
-                    onIsVisibleChange={(v) => {
-                      onStateChange({ chartVisibility: { [id]: v } });
-                    }}
+                    onIsVisibleChange={(v) => setChartVisibility(id, v)}
                     isVisible={isVisible}
                     colorScheme={$colorScheme}
                     chartView={chartView}
                     onRemove={removeChart.bind(null, id)}
                     onUp={index > 0 ? reorderCharts.bind(null, id, -1) : undefined}
-                    onDown={index + 1 < chartsOrder.length ? reorderCharts.bind(null, id, 1) : undefined}
+                    onDown={index + 1 < activeChartsOrder.length ? reorderCharts.bind(null, id, 1) : undefined}
                     onSpecChange={(spec) => {
                       onChartsChange({ [id]: undefined });
                       onChartStatesChange({ [id]: undefined });
@@ -371,24 +536,27 @@
       </div>
     {/if}
   {:else}
-    <!-- Mobile layout -->
+    <!-- Mobile layout. Canvas separation is a desktop convenience —
+         mobile flattens into a single inline list pulled from the
+         first canvas tab. Chat tabs are intentionally hidden on
+         mobile (textarea + history on <500px is unpleasant). -->
+    {@const firstCanvas = tabs.find((t) => t.kind === "canvas") as CanvasTab | undefined}
+    {@const mobileCharts = firstCanvas?.chartsOrder ?? []}
     <div class="w-full h-full overflow-y-scroll flex flex-col gap-2">
-      {#each sections.embedding.concat(chartsOrder, sections.table) as id, index (id)}
-        {@const isVisible = layoutState.chartVisibility?.[id] ?? true}
-        {@const indexInCharts = chartsOrder.indexOf(id)}
+      {#each sections.embedding.concat(mobileCharts, sections.table) as id, index (id)}
+        {@const isVisible = firstCanvas?.chartVisibility?.[id] ?? true}
+        {@const indexInCharts = mobileCharts.indexOf(id)}
         <div class="bg-white dark:bg-black rounded-md flex flex-col group" animate:flip={{ duration: 300 }} out:slide>
           <ListChartPanel
             id={id}
             spec={charts[id]}
-            onIsVisibleChange={(v) => {
-              onStateChange({ chartVisibility: { [id]: v } });
-            }}
+            onIsVisibleChange={(v) => setChartVisibility(id, v)}
             isVisible={isVisible}
             colorScheme={$colorScheme}
             chartView={chartView}
             onRemove={removeChart.bind(null, id)}
             onUp={indexInCharts > 0 ? reorderCharts.bind(null, id, -1) : undefined}
-            onDown={indexInCharts != -1 && indexInCharts + 1 < chartsOrder.length
+            onDown={indexInCharts != -1 && indexInCharts + 1 < mobileCharts.length
               ? reorderCharts.bind(null, id, 1)
               : undefined}
           />
