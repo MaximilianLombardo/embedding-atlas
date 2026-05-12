@@ -7,6 +7,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import { get, writable } from "svelte/store";
 
+  import DetailDrawer from "./charts/instances/DetailDrawer.svelte";
   import LayoutView from "./layouts/LayoutView.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
   import FilteredCount from "./views/FilteredCount.svelte";
@@ -203,13 +204,15 @@
 
   const doSearch = latestAsync(
     async (query: any, mode: string) => {
-      // Race guard: the debounce timer trails the input by 500ms.
-      // If the user types then immediately clears, clearSearch() runs
-      // on the empty-input branch BUT the trailing timer still fires
-      // with the stale (non-empty) args — re-showing the dropdown
-      // even though the input is empty. Bail if the live query value
-      // is empty so the trailing timer has no effect.
-      if (get(searchQueryStore).trim() === "") return null;
+      // Race guard for the trailing debounce timer: text-input mode
+      // is debounced 500ms, so if the user types then clears,
+      // clearSearch() runs on the empty-input branch but the trailing
+      // timer still fires with stale args — re-showing the dropdown.
+      // The guard skips that stale fire. Neighbors mode bypasses
+      // debounce (tooltip button → direct call) and its query is a
+      // row id, not the text-input value, so the guard would
+      // incorrectly block legitimate neighbor lookups.
+      if (mode !== "neighbors" && get(searchQueryStore).trim() === "") return null;
       searchResultVisibleStore.set(true);
 
       let predicate = currentPredicate();
@@ -483,6 +486,42 @@
     chartThemeStore.set(chartTheme ?? undefined);
   });
 
+  // Detail-drawer state. Lifted out of `Instances.svelte` so that
+  // the embedding tooltip can write into it via the "Open detail"
+  // action. The drawer is rendered once at the top of this component;
+  // both the table's row double-click and the embedding's tooltip
+  // button feed it through `chartContext.detailRow`.
+  let detailRowStore = writable<Record<string, any> | null>(null);
+  let detailRowValue = $state<Record<string, any> | null>(null);
+  detailRowStore.subscribe((v) => (detailRowValue = v));
+
+  // Table-reveal channel. The drawer's "Show in table" button calls
+  // `revealRow(id)` which: forces list layout + showTable, bumps a
+  // nonce-tagged ticket here, and closes the drawer. Instances
+  // subscribes to the ticket and runs animateToPoint when nonce
+  // changes — nonce-based so re-revealing the same row still fires.
+  let revealTicketStore = writable<{ id: RowID; nonce: number } | null>(null);
+  let revealNonce = 0;
+  function revealRow(id: RowID) {
+    if (id == null) return;
+    if (layout !== "list") layout = "list";
+    const listState = (layoutStates.list ?? {}) as Record<string, any>;
+    if (listState.showTable === false) {
+      layoutStates = { ...layoutStates, list: { ...listState, showTable: true } };
+    }
+    // Highlight the row so the user has a visual anchor for where the
+    // scroll landed. Without this the scroll happens silently and
+    // looks like the button "didn't work" — particularly when the
+    // drawer is still open over part of the table.
+    chartContext.highlight.set([id]);
+    revealNonce += 1;
+    revealTicketStore.set({ id, nonce: revealNonce });
+    // Intentionally NOT closing the drawer here: the panel only covers
+    // the right portion of the viewport, the table is still visible
+    // to the left, and keeping the drawer open lets the user see both
+    // the row's highlight AND its detail until they explicitly dismiss.
+  }
+
   // svelte-ignore state_referenced_locally
   let chartContext: ChartContext = {
     coordinator: coordinator,
@@ -498,6 +537,16 @@
     persistentCache: cache ?? { get: async () => null, set: async (key, value) => {} },
     searchModes: searchModes,
     search: doSearch,
+    clearSearch: () => {
+      // Drop both the query AND the result so the embedding overlay
+      // (orange points + lines) clears too. Setting query to "" alone
+      // only works for typed-text search — Neighbors mode opens the
+      // dropdown with an empty query, so we need to null the result
+      // directly here.
+      searchQueryStore.set("");
+      searchResultStore.set(null);
+      searchResultVisibleStore.set(false);
+    },
     searchResult: searchResultStore,
     searchQuery: searchQueryStore,
     searchMode: searchModeStore,
@@ -506,6 +555,9 @@
     searchFilterPending: searchFilterPendingStore,
     searcherStatus: searcherStatusStore,
     highlight: writable(null),
+    detailRow: detailRowStore,
+    revealRow: revealRow,
+    revealTicket: revealTicketStore,
     embeddingViewConfig: embeddingViewConfig,
     embeddingViewLabels: embeddingViewLabels,
   };
@@ -988,6 +1040,16 @@
     </CommandPalette>
   {/if}
 </div>
+
+<DetailDrawer
+  row={detailRowValue}
+  idColumn={data.id}
+  columns={columns.map((c) => c.name)}
+  columnStyles={$resolvedColumnStyles}
+  onClose={() => detailRowStore.set(null)}
+  onShowInTable={(id) => revealRow(id)}
+/>
+
 <svelte:window onkeydown={onWindowKeydown} />
 
 {#snippet globalSettings()}

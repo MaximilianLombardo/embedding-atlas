@@ -27,8 +27,18 @@ export default defineConfig({
     // works against a real DuckDB+Mosaic stack (port matches the
     // default the backend lands on; 5056 is the fallback for when
     // 5055 is in use). Override at run time with `BACKEND_PORT`.
+    //
+    // `ws: true` on `/data` is required so the viewer's MCP control
+    // socket (`/data/mcp_websocket`) is upgraded through the proxy.
+    // Without it the upgrade fails silently, the backend's
+    // `mcp_bridge` has no viewer to dispatch tool calls to, and
+    // chat tool calls (e.g. `query_sql`) return
+    // "Viewer disconnected. Reload the viewer and try again."
     proxy: {
-      "/data": `http://localhost:${process.env.BACKEND_PORT ?? 5055}`,
+      "/data": {
+        target: `http://localhost:${process.env.BACKEND_PORT ?? 5055}`,
+        ws: true,
+      },
       "/mcp": `http://localhost:${process.env.BACKEND_PORT ?? 5055}`,
     },
   },

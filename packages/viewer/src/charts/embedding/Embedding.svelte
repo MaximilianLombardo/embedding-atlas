@@ -90,6 +90,15 @@
   let selection = $state.raw<DataPoint[] | null>(null);
   let overlayProps = $state.raw<{ center: DataPoint | null; points: DataPoint[] } | null>(null);
 
+  // Drawer-open → clear hover tooltip happens inline in the
+  // `onOpenDetail` callback (see customTooltip.props below). The
+  // earlier $effect that subscribed to context.detailRow turned out
+  // to silently break hover registration — likely because the
+  // subscribe callback synchronously fires during effect setup and
+  // tangles up with Svelte's reactive tracking around the local
+  // `tooltip` $state.raw. Inline clearing in the click handler is
+  // the same end behavior without the subscription machinery.
+
   // Update the category mapping and legend.
   $effect.pre(() => {
     let promise = context.cache.value(`embedding/category/${categoryColumn}`, () =>
@@ -291,6 +300,18 @@
         columnStyles: $columnStyles,
         onNearestNeighborSearch:
           (context.searchModes ?? []).indexOf("neighbors") >= 0 ? (id: any) => context.search?.(id, "neighbors") : null,
+        onOpenDetail: context.detailRow
+          ? (point: DataPoint) => {
+              context.detailRow?.set((point.fields ?? null) as Record<string, any> | null);
+              tooltip = null;
+            }
+          : null,
+        onShowInTable: context.revealRow
+          ? (id: any) => {
+              context.revealRow?.(id);
+              tooltip = null;
+            }
+          : null,
       },
     }}
     customOverlay={{
@@ -354,10 +375,7 @@
       searcherStatus={$searcherStatusStore}
       visible={$searchResultVisibleStore}
       onResultClick={(item) => context.highlight.set([item.id])}
-      onClear={() => {
-        context.searchQuery!.set("");
-        context.searchResultVisible!.set(false);
-      }}
+      onClear={() => context.clearSearch?.()}
     />
   {/if}
 </div>

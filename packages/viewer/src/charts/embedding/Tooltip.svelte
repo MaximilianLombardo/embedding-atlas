@@ -4,7 +4,7 @@
 
   import TooltipContent from "../../views/TooltipContent.svelte";
 
-  import { IconSearch } from "../../assets/icons.js";
+  import { IconRight, IconSearch, IconTable } from "../../assets/icons.js";
   import type { ColumnStyle } from "../../renderers/types.js";
 
   interface Props {
@@ -12,30 +12,69 @@
     columnStyles?: Record<string, ColumnStyle>;
     colorScheme: "light" | "dark";
     onNearestNeighborSearch?: (id: any) => void;
+    onOpenDetail?: (point: DataPoint) => void;
+    onShowInTable?: (id: any) => void;
   }
 
-  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch }: Props = $props();
+  let { tooltip, columnStyles, colorScheme, onNearestNeighborSearch, onOpenDetail, onShowInTable }: Props = $props();
+
+  let hasActions = $derived(
+    onNearestNeighborSearch != null || onOpenDetail != null || onShowInTable != null,
+  );
+
+  const pillClass =
+    "flex items-center gap-1 px-2.5 py-1 rounded-full border border-slate-300 dark:border-slate-600 " +
+    "bg-white/60 dark:bg-slate-900/60 text-xs font-medium text-slate-600 dark:text-slate-300 " +
+    "hover:bg-slate-100 dark:hover:bg-slate-700/60 hover:text-slate-900 dark:hover:text-slate-100 transition";
 </script>
 
 <div class="embedding-atlas-root">
   <div
-    class="p-2 border flex flex-col gap-2 border-slate-300 dark:border-slate-600 shadow-md text-slate-700 dark:text-slate-300 rounded-md text-ellipsis overflow-x-hidden overflow-y-scroll bg-white/75 dark:bg-slate-800/75 backdrop-blur-sm"
+    class="p-2 border flex flex-col gap-2 border-slate-300 dark:border-slate-600 shadow-md text-slate-700 dark:text-slate-300 rounded-md text-ellipsis overflow-x-hidden overflow-y-auto bg-white/85 dark:bg-slate-800/85 backdrop-blur-sm"
     class:dark={colorScheme == "dark"}
-    style:max-width="400px"
-    style:max-height="300px"
+    style:max-width="380px"
+    style:max-height="320px"
   >
-    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} />
-    {#if onNearestNeighborSearch}
-      <div>
-        <button
-          class="text-sm flex gap-0.5 items-center text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-300"
-          onclick={() => {
-            onNearestNeighborSearch?.(tooltip.identifier);
-          }}
-        >
-          <IconSearch /> Nearest Neighbors
-        </button>
-      </div>
-    {/if}
+    <TooltipContent values={tooltip.fields ?? {}} columnStyles={columnStyles ?? {}} mode="preview">
+      {#snippet afterHeader()}
+        {#if hasActions}
+          <div class="flex flex-row gap-2 items-center">
+            {#if onNearestNeighborSearch}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onNearestNeighborSearch?.(tooltip.identifier)}
+                title="Search for nearest neighbors of this point"
+              >
+                <IconSearch class="w-3.5 h-3.5" />
+                Neighbors
+              </button>
+            {/if}
+            {#if onOpenDetail}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onOpenDetail?.(tooltip)}
+                title="Open the full detail drawer for this row"
+              >
+                <IconRight class="w-3.5 h-3.5" />
+                Open detail
+              </button>
+            {/if}
+            {#if onShowInTable}
+              <button
+                type="button"
+                class={pillClass}
+                onclick={() => onShowInTable?.(tooltip.identifier)}
+                title="Scroll the table to this row"
+              >
+                <IconTable class="w-3.5 h-3.5" />
+                Show in table
+              </button>
+            {/if}
+          </div>
+        {/if}
+      {/snippet}
+    </TooltipContent>
   </div>
 </div>

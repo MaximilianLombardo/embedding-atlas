@@ -29,7 +29,6 @@
 
   import ActionButton from "../../widgets/ActionButton.svelte";
   import ColumnControls from "./ColumnControls.svelte";
-  import DetailDrawer from "./DetailDrawer.svelte";
   import SortOrderControl from "./SortOrderControl.svelte";
   import Table from "./Table.svelte";
 
@@ -79,13 +78,6 @@
   // 10-row sample. Local state keyed by column name; passed to Table to
   // seed table-core's columnSizing initial state.
   let defaultColumnWidths = $state.raw<Record<string, number>>({});
-
-  // Detail-drawer state for D3. Populated on row double-click; surfaces
-  // a side panel with all fields. Lives here so the drawer survives
-  // table refetches. We hold the row record itself rather than just an
-  // id — the table already had it on hand at click time, so re-fetching
-  // would be wasted work.
-  let detailRow = $state.raw<Record<string, any> | null>(null);
 
   // Combined column state (visibility / order / pinning). Owned here
   // so ColumnControls can write directly while Table reflects it into
@@ -215,6 +207,24 @@
     });
   });
 
+  // Reveal channel — host writes a nonce-tagged ticket to
+  // `context.revealTicket` from the drawer's "Show in table" button.
+  // Animate when the nonce changes; the nonce makes re-revealing the
+  // same row work (a same-value Writable wouldn't re-fire by itself).
+  // svelte-ignore state_referenced_locally
+  let revealTicketStore = $derived(context.revealTicket);
+  let lastRevealNonce = $state(0);
+  $effect(() => {
+    const ticket = $revealTicketStore;
+    if (ticket == null) return;
+    if (ticket.nonce === lastRevealNonce) return;
+    lastRevealNonce = ticket.nonce;
+    // Defer one microtask so any layout-state changes the host
+    // dispatched in the same tick (showTable=true, layout="list")
+    // settle before we try to scroll inside the not-yet-mounted view.
+    queueMicrotask(() => animateToPoint(ticket.id));
+  });
+
   // Initial offset from chartState.offset (D1: persists scroll-to-on-mount).
   // Fires exactly once, when the loader has settled to a non-empty
   // totalCount and the Table has mounted (so contentView is bound).
@@ -241,21 +251,17 @@
     if (!loader) return;
     const offset = await loader.offsetForId(id);
     if (offset == null) return;
-    // ROW_NUMBER is 1-based; scrollToIndex is 0-based.
+    // ROW_NUMBER is 1-based; scrollToIndex is 0-based. "start" places
+    // the target row at the TOP of the visible area — much more
+    // legible as a "I clicked Show in Table, this is the row" anchor
+    // than centering (which lands the row in the middle with similar
+    // rows above and below, ambiguous which one was the target).
     const targetIndex = Math.max(0, offset - 1);
-    (contentView as any)?.scrollToIndex?.(targetIndex, "center");
-    // Wait for the row to land in the DOM, then scroll it into precise view.
-    // `behavior: "instant"` (not "smooth") because animateToPoint fires
-    // in response to a user-invoked navigation — search-result click,
-    // embedding double-click, etc. The user already invoked the
-    // "jump" gesture, so a 500ms smooth-scroll animation just adds
-    // perceived latency without telegraphing anything. The embedding
-    // pane is simultaneously running its own ~500ms fly-to; making
-    // them race makes the whole interaction feel slow. Instant scroll
-    // on the table side lets the embedding's animation be the only
-    // motion the user tracks.
+    (contentView as any)?.scrollToIndex?.(targetIndex, "start");
+    // Wait for the row to land in the DOM, then anchor it precisely
+    // at the top (scrollToIndex on the virtualizer is approximate).
     const el = await (contentView as any)?.getElementForId?.(id);
-    el?.scrollIntoView({ behavior: "instant", block: "center" });
+    el?.scrollIntoView({ behavior: "instant", block: "start" });
     // Persist the user's anchor so reloads land back here.
     onStateChange({ offset: targetIndex });
   }
@@ -275,7 +281,7 @@
 
   function handleRowDoubleClick(row: Record<string, any>) {
     if (row == null) return;
-    detailRow = row;
+    context.detailRow?.set(row);
   }
 
   // Seed columnState from localStorage once we know the column list.
@@ -438,13 +444,6 @@
       </div>
     {/if}
   </div>
-
-  <DetailDrawer
-    row={detailRow}
-    columns={loader?.columns ?? []}
-    columnStyles={columnStyles}
-    onClose={() => (detailRow = null)}
-  />
 </div>
 
 {#snippet tableSettings()}

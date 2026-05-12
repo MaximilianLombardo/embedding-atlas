@@ -107,6 +107,26 @@
     searchFilterEnabled && searchQuery.trim() !== "" && allItems.length > 0,
   );
 
+  // Click-outside dismissal. When the dropdown is visible, a click on
+  // anything outside the search-bar wrapper (input + dropdown) should
+  // call onClear — same effect as the X button. Use pointerdown rather
+  // than click so it fires before any result-button click handler.
+  let wrapperEl: HTMLDivElement | null = $state(null);
+  $effect(() => {
+    if (!dropdownVisible) return;
+    function onPointerDown(e: PointerEvent) {
+      if (wrapperEl == null) return;
+      // Account for ShadowRoot: composedPath gives the actual click
+      // path including shadow-DOM ancestors. `contains` alone misses
+      // events that originate inside the same shadow tree.
+      const path = e.composedPath();
+      if (path.includes(wrapperEl)) return;
+      onClear?.();
+    }
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  });
+
   /**
    * Pull a sensible "title" out of a result item. Most useful field
    * is the configured `text` column (the embedding's data.text), if
@@ -146,7 +166,10 @@
   }
 </script>
 
-<div class="absolute top-0 left-0 z-10 m-2 flex flex-col gap-1 pointer-events-auto">
+<div
+  bind:this={wrapperEl}
+  class="absolute top-0 left-0 z-10 m-2 flex flex-col gap-1 pointer-events-auto"
+>
   <!-- Input + filter toggle (always visible) -->
   <div
     class="flex items-center gap-1 h-8 px-2 rounded-md border border-slate-300 dark:border-slate-600 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm shadow-sm w-72"
@@ -167,7 +190,11 @@
              [&::-webkit-search-cancel-button]:appearance-none
              [&::-webkit-search-decoration]:appearance-none"
     />
-    {#if searchQuery !== ""}
+    {#if searchQuery !== "" || dropdownVisible}
+      <!-- Show the clear button whenever there's something to dismiss:
+           either a typed query OR a results dropdown (the dropdown
+           can also be opened by tooltip → Neighbors, which leaves the
+           input empty). -->
       <button
         type="button"
         onclick={() => onClear?.()}
