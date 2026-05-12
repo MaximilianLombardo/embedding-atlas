@@ -259,9 +259,17 @@
             style:height="{hasTable ? tblH : 0}px"
             style:transition={isResizing ? "none" : "height 300ms ease-in-out"}
           >
+            <!-- Inner height: pinned to `containerHeight` for the table tab
+                 to keep the virtualizer's ResizeObserver stable during
+                 pane show/hide tweens (see outer comment above). The chat
+                 tab has no virtualizer and renders an `h-full flex flex-col`
+                 panel whose composer sits at the bottom — pinning it tall
+                 would push the composer below the outer's visible clip. So
+                 when chat is active, size the inner to the visible region
+                 (`tblH`) instead. -->
             <div
               class="flex flex-col gap-1 overflow-clip min-h-0"
-              style:height="{containerHeight}px"
+              style:height="{chatAvailable && tableTab === 'chat' ? tblH : containerHeight}px"
             >
               {#if chatAvailable}
                 <div class="flex-none flex items-center gap-2 px-1">
