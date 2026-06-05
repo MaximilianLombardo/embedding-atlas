@@ -39,11 +39,10 @@
   import { defaultCharts } from "./charts/default_charts.js";
   import { buildCommands } from "./commands/builtin.js";
   import { EMBEDDING_ATLAS_VERSION } from "./constants.js";
-  import { type PanelTab } from "./layouts/list/types.js";
+  import { type Tab } from "./layouts/list/types.js";
   import { provideModelContext } from "./model_context/model_context.js";
   import { type ColumnStyle } from "./renderers/types.js";
   import { performSearch, querySearchResultItems, resolveSearcher, type SearchResultItem } from "./search/search.js";
-  import { type ChatTurn } from "./utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "./utils/chat_context.js";
   import { makeColorSchemeStore } from "./utils/color_scheme.js";
   import { columnDescriptions, distinctCounts, predicateToString, type ColumnDesc } from "./utils/database.js";
@@ -429,8 +428,11 @@
   });
 
   let paletteOpen = $state(false);
-  let chatState = $state<{ turns: ChatTurn[] }>({ turns: [] });
 
+  // Multi-chat: conversation history is owned per-chat-tab by
+  // `ListLayout` (kept in a local `$state` map there), not on this
+  // singleton provider. The provider broadcasts only the shared
+  // endpoint + context resolution.
   const chatProvider: ChatProvider = {
     get endpoint() {
       return chatEndpoint ?? null;
@@ -443,7 +445,6 @@
         text_column: data.text ?? null,
       };
     },
-    state: chatState,
   };
   setContext(CHAT_CONTEXT_KEY, chatProvider);
 
@@ -567,9 +568,17 @@
   let layout = $state.raw<string>("list");
   let layoutStates = $state.raw<Record<string, any>>({});
 
-  let panelTab = $derived((layoutStates.list?.panelTab ?? "charts") as PanelTab);
+  // Active right-panel tab id. `ListLayout` owns the tabs array and
+  // accepts any string here; the command palette's chat-toggle uses
+  // `firstCanvasTabId` below to flip between chat and the leftmost
+  // canvas-kind tab regardless of how the user renamed it.
+  let panelTab = $derived((layoutStates.list?.panelTab ?? "chat") as string);
+  let firstCanvasTabId = $derived.by(() => {
+    const tabs = layoutStates.list?.tabs as Tab[] | undefined;
+    return tabs?.find((t) => t.kind === "canvas")?.id ?? "canvas-1";
+  });
 
-  function setPanelTab(tab: PanelTab) {
+  function setPanelTab(tab: string) {
     layoutStates = { ...layoutStates, list: { ...(layoutStates.list ?? {}), panelTab: tab } };
   }
 
@@ -603,6 +612,7 @@
       chatAvailable: chatProvider.endpoint != null,
       panelTab,
       setPanelTab,
+      firstCanvasTabId,
       colorCandidates,
       colorBy: colorEmbeddingBy,
     }),
