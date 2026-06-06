@@ -61,8 +61,14 @@ export type ChatEvent =
       // Absent for tool results that don't include the id column.
       cited_rows?: ChatCitation[];
     }
-  | { type: "done"; reason?: string }
+  | { type: "done"; reason?: string; usage?: ChatUsage }
   | { type: "error"; message: string };
+
+/** Token accounting for one assistant turn, from the `done` event. */
+export interface ChatUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
 
 export interface ChatToolCall {
   id: string;
@@ -96,6 +102,19 @@ export interface ChatTurn {
   role: "user" | "assistant";
   text: string;
   tools: ChatToolCall[];
+  /**
+   * Set when the stream for this assistant turn failed (network drop,
+   * backend error event, non-OK response). Rendered as a red error strip
+   * with a Retry affordance rather than buried italic text in the bubble.
+   */
+  isError?: boolean;
+  /** Human-readable failure reason shown in the error strip when `isError`. */
+  errorMessage?: string;
+  /**
+   * Token accounting captured from the terminal `done` event. Shown as a
+   * muted count under the assistant bubble for cost-aware use.
+   */
+  usage?: ChatUsage;
 }
 
 interface SSERecord {

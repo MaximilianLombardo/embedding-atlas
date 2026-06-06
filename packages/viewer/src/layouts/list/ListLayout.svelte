@@ -34,7 +34,7 @@
 </script>
 
 <script lang="ts">
-  import { deepMemo } from "@embedding-atlas/utils";
+  import { debounce, deepMemo } from "@embedding-atlas/utils";
   import { getContext } from "svelte";
   import { flip } from "svelte/animate";
   import { slide } from "svelte/transition";
@@ -43,6 +43,7 @@
   import ListChartPanel from "./ListChartPanel.svelte";
   import PanelTabBar, { type AddKind, type PanelTabInfo } from "./PanelTabBar.svelte";
   import Resizer from "./Resizer.svelte";
+  import { loadStoredChatHistory, saveStoredChatHistory } from "./lib/use_chat_history.svelte.js";
 
   import type { ChatTurn } from "../../utils/chat_client.js";
   import { CHAT_CONTEXT_KEY, type ChatProvider } from "../../utils/chat_context.js";
@@ -118,21 +119,34 @@
   // instead of inside `layoutState.tabs` because `layoutStates` upstream
   // is `$state.raw` — deep in-place mutations (which the streaming
   // response code performs on the turns array) wouldn't propagate
-  // through a raw state object. Today's chat is in-memory only, so this
-  // also preserves that invariant. A future "persist chat history" pass
-  // can lift these arrays into layoutState explicitly.
-  let chatTurns: Record<string, ChatTurn[]> = $state({});
+  // through a raw state object. Persisted separately to localStorage,
+  // keyed by dataset table (A2), so conversations survive a reload.
+  // svelte-ignore state_referenced_locally
+  let chatTurns: Record<string, ChatTurn[]> = $state(loadStoredChatHistory(context.table));
 
   // Ensure every chat tab has an entry in `chatTurns`. Runs on tab
   // changes — covers the initial seed, every addChat, and the case
   // where persisted state lists chat tabs we haven't seen yet this
-  // session (reloads).
+  // session (reloads). A hydrated entry from localStorage wins; tabs with
+  // no stored history fall back to an empty conversation.
   $effect.pre(() => {
     for (const t of tabs) {
       if (t.kind === "chat" && !(t.id in chatTurns)) {
         chatTurns[t.id] = [];
       }
     }
+  });
+
+  // Debounced persistence (A2). The snapshot deep-reads `chatTurns`, so the
+  // effect re-runs on streaming mutations (text deltas, tool pushes) and on
+  // tab add/delete/clear; debounce collapses the per-token churn into at most
+  // one write every 500ms.
+  const persistChatHistory = debounce((table: string, snapshot: Record<string, ChatTurn[]>) => {
+    saveStoredChatHistory(table, snapshot);
+  }, 500);
+  $effect(() => {
+    const snapshot = $state.snapshot(chatTurns) as Record<string, ChatTurn[]>;
+    persistChatHistory(context.table, snapshot);
   });
 
   // Active tab. Falls back to the first tab when the persisted id no
@@ -145,9 +159,7 @@
   });
 
   let activeTab: Tab | undefined = $derived(tabs.find((t) => t.id === panelTab) ?? tabs[0]);
-  let activeCanvas: CanvasTab | undefined = $derived(
-    activeTab?.kind === "canvas" ? activeTab : undefined,
-  );
+  let activeCanvas: CanvasTab | undefined = $derived(activeTab?.kind === "canvas" ? activeTab : undefined);
 
   function setPanelTab(id: string) {
     onStateChange({ panelTab: id });
