@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .chat import stream_chat
+from .chat import refine_prompt, stream_chat
 from .data_source import DataSource
 from .mcp_bridge import McpBridgeClient
 from .utils import arrow_to_bytes, to_parquet_bytes
@@ -91,7 +91,10 @@ def make_server(
             meta["mcp"] = {"type": "websocket"}
         # Chat
         if chat:
-            meta["chat"] = {"endpoint": "/data/chat"}
+            meta["chat"] = {
+                "endpoint": "/data/chat",
+                "refineEndpoint": "/data/chat/refine",
+            }
 
         return data_source.metadata | meta
 
@@ -244,6 +247,21 @@ def make_server(
                     "X-Accel-Buffering": "no",
                 },
             )
+
+        @app.post("/data/chat/refine")
+        async def post_chat_refine(req: Request):
+            # Cheap, non-streaming prompt rewrite using the same EA context as
+            # the chat path (selection predicate, schema, capability surface).
+            # Always returns JSON; degrades to echoing the original prompt when
+            # no API key / SDK is available, so the composer can fall back to
+            # sending what the user typed.
+            body = await req.json()
+            result = await refine_prompt(
+                body,
+                duckdb_connection=chat_connection,
+                table="dataset",
+            )
+            return JSONResponse(result)
 
     # Static files for the frontend
     app.mount("/", StaticFiles(directory=static_path, html=True))

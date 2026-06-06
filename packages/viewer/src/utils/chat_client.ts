@@ -152,6 +152,59 @@ async function* parseSSE(response: Response): AsyncIterable<SSERecord> {
   }
 }
 
+/**
+ * Result of an optional prompt-refinement call (Tier-2). Mirrors the JSON
+ * returned by the backend `POST /data/chat/refine` path. When the backend has
+ * no API key / SDK, or the refine call fails, it returns the original prompt
+ * with `refined_applied: false` so the composer can fall back to sending what
+ * the user typed.
+ */
+export interface RefineResult {
+  original: string;
+  refined: string;
+  refined_applied: boolean;
+  reason?: string | null;
+}
+
+/**
+ * Rewrite a terse prompt into a well-specified one using EA context, via the
+ * backend refine path. Non-streaming, single JSON response. On any network /
+ * backend failure this resolves to a graceful fallback (the original prompt,
+ * `refined_applied: false`) rather than throwing — the composer always wants a
+ * sendable prompt back.
+ */
+export async function refinePrompt(
+  endpoint: string,
+  request: { prompt: string; context: ChatContext },
+  signal?: AbortSignal,
+): Promise<RefineResult> {
+  const fallback: RefineResult = {
+    original: request.prompt,
+    refined: request.prompt,
+    refined_applied: false,
+    reason: "refine request failed",
+  };
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal: signal,
+    });
+    if (!response.ok) return fallback;
+    const data = (await response.json()) as Partial<RefineResult>;
+    if (typeof data.refined !== "string") return fallback;
+    return {
+      original: data.original ?? request.prompt,
+      refined: data.refined,
+      refined_applied: Boolean(data.refined_applied),
+      reason: data.reason ?? null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export async function* streamChat(
   endpoint: string,
   request: { messages: ChatMessage[]; context: ChatContext },
