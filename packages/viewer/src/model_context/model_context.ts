@@ -17,6 +17,7 @@ import {
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
 import { validateChartSpec } from "./chart_spec_guard.js";
+import { createConceptAxisTool } from "./concept_axis_tool.js";
 import { createContrastTool } from "./contrast_tool.js";
 import { createRetrieveTool, type RetrieveToolContext } from "./retrieve_tool.js";
 import { visionTools } from "./vision_tools.js";
@@ -197,6 +198,11 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
       columns: () => delegate.context.columns,
       currentPredicate: delegate.retrieve.currentPredicate,
     }),
+    // Concept Axis — define an interpretable latent direction from two
+    // poles and score rows onto it (chat-roadmap Lens 3). Reuses the
+    // `retrieve` context (searcher + coordinator + columns + predicate);
+    // lives in its own module.
+    createConceptAxisTool(delegate.retrieve),
     {
       name: "list_renderers",
       description:
