@@ -16,6 +16,7 @@ import {
 } from "../schemas.js";
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
+import { visionTools } from "./vision_tools.js";
 
 /** Default name used by apply_filter when the model omits the `name` parameter. */
 const DEFAULT_FILTER_NAME = "Chat Filter";
@@ -54,11 +55,7 @@ function normalizeEcdfLayer(layer: any): any {
   const enc = layer?.encoding;
   if (!enc) return layer;
   const yIsEcdfRank = enc.y && (enc.y as any).aggregate === "ecdf-rank";
-  const xIsPlainField =
-    enc.x &&
-    "field" in enc.x &&
-    !("aggregate" in enc.x) &&
-    (enc.x as any).bin == null;
+  const xIsPlainField = enc.x && "field" in enc.x && !("aggregate" in enc.x) && (enc.x as any).bin == null;
   if (!yIsEcdfRank || !xIsPlainField) return layer;
   const xField = (enc.x as any).field;
   return {
@@ -679,7 +676,14 @@ Other independent filter sources (the embedding brush, predicates the user added
     },
     {
       name: "get_full_screenshot",
-      description: "Get a full screenshot of the application",
+      description: `Get a full screenshot of the ENTIRE application (all panels, toolbars, chat, and the embedding together).
+
+Use this ONLY for questions about app CHROME / LAYOUT — "what panels are open", "where is the settings button", "is the table visible", "what does the dashboard arrangement look like". It captures everything, so the embedding is small and surrounded by distracting UI.
+
+For anything ABOUT THE EMBEDDING itself, prefer the targeted tools instead:
+  - get_region_screenshot — a clean, cropped view of the embedding scatter (or a sub-region of it).
+  - render_embedding_view — the embedding plus a structured legend JSON (colors → categories → counts).
+Answer quantitative questions from run_sql_query, not from this screenshot.`,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -689,6 +693,9 @@ Other independent filter sources (the embedding brush, predicates the user added
         return imageResponse(image);
       },
     },
+    // Vision substrate — targeted embedding rendering. Lives in its own
+    // module (vision_tools.ts); registered here with a single line.
+    ...visionTools(delegate, screenshotOptions),
   ];
 
   api.provideContext({ tools: tools });

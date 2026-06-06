@@ -9,6 +9,7 @@
     "check": "svelte-check",
     "package": "npm run build && publint",
     "preview": "vite preview",
+    "test": "vitest run",
     "test:e2e": "playwright test"
   },
   "files": [
@@ -78,7 +79,8 @@
     "unplugin-icons": "^23.0.1",
     "vite": "^8.0.1",
     "vite-plugin-dts": "^4.5.4",
-    "vite-plugin-wasm": "^3.6.0"
+    "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^4.1.0"
   },
   "dependencies": {
     "@orama/orama": "^3.1.18"
