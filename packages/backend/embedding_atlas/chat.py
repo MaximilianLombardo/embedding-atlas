@@ -246,13 +246,27 @@ def _citation_instruction(citation_cols: set[str]) -> str:
         link_template = '**"Title"**'
         column_hint = "the `title` column (no stable identifier is available)"
     available = ", ".join(sorted(f"`{c}`" for c in citation_cols))
+    no_id_rule = (
+        ""
+        if "title" in column_hint and link_template.startswith("**")
+        else (
+            " Only build the link when you actually have the real, non-empty "
+            f"identifier value from {column_hint} — taken verbatim from the "
+            "sample rows or a tool result. NEVER guess or invent an identifier, "
+            "and NEVER fill the link with a placeholder such as '—', 'N/A', "
+            "'unknown', or an empty string: a link like `https://doi.org/—` is "
+            "broken. If you do not have the real identifier for a paper, cite it "
+            'by its **bold title** with no link instead.'
+        )
+    )
     return (
         "This dataset is scholarly/paper-shaped — the available citation "
         f"columns are: {available}. When you make a paper-grounded claim, "
         "cite at least one specific paper from the sample (or from a SQL "
         "query) that supports it. Use this exact link template, drawing the "
-        f"identifier from {column_hint}: {link_template}. Skip citations on "
-        "purely conversational replies (e.g. 'what columns do you have?')."
+        f"identifier from {column_hint}: {link_template}." + no_id_rule + " Skip "
+        "citations on purely conversational replies (e.g. 'what columns do you "
+        "have?')."
     )
 
 
