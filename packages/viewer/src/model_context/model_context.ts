@@ -17,6 +17,7 @@ import {
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
 import { validateChartSpec } from "./chart_spec_guard.js";
+import { createContrastTool } from "./contrast_tool.js";
 import { createRetrieveTool, type RetrieveToolContext } from "./retrieve_tool.js";
 import { visionTools } from "./vision_tools.js";
 
@@ -185,6 +186,17 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
     // vector). Lives in its own module; returns rows shaped for the
     // citation-pill pipeline.
     createRetrieveTool(delegate.retrieve),
+    // Contrastive "what's different about these rows vs the rest" — computes
+    // selection-vs-complement distribution deltas in DuckDB for the model to
+    // narrate. Reads coordinator/table/id/columns from the chart context and
+    // the live cross-filter predicate from the same getter `retrieve` uses.
+    createContrastTool({
+      coordinator: delegate.context.coordinator,
+      table: delegate.context.table,
+      idColumn: delegate.context.id,
+      columns: () => delegate.context.columns,
+      currentPredicate: delegate.retrieve.currentPredicate,
+    }),
     {
       name: "list_renderers",
       description:
