@@ -253,6 +253,19 @@ export class FullTextSearcher implements Searcher {
     return this.allRowVectors;
   }
 
+  /**
+   * Embed arbitrary text(s) into the same space as `getRowVectors`, using
+   * the searcher's in-browser embedder (lazy-loads the model on first
+   * call). Vectors are L2-normalized (the worker uses `normalize: true`),
+   * so dot product == cosine. Used by latent-space chat features (e.g. the
+   * `concept_axis` tool) to embed text "poles". Returns owned copies, not
+   * the worker's transferable subarray views, so callers can retain them.
+   */
+  async embedTexts(texts: string[]): Promise<Float32Array[]> {
+    const vecs = await this.embedder.embed(texts);
+    return vecs.map((v) => new Float32Array(v));
+  }
+
   predicateString(predicate: any | null): string | null {
     if (predicate != null && predicate.toString() != "") {
       return predicate.toString();
@@ -496,6 +509,12 @@ export function resolveSearcher(options: {
     // init). Expose warmup so the host can kick off model load in the
     // background after the dataset settles.
     result.warmup = fts.warmEmbedder.bind(fts);
+    // Latent-space capabilities (row-vector cache + text embedding) for
+    // chat features like `concept_axis`. Only the built-in searcher
+    // exposes these; a host-supplied custom searcher would have to
+    // implement them itself to enable those tools.
+    result.getRowVectors = fts.getRowVectors.bind(fts);
+    result.embedTexts = fts.embedTexts.bind(fts);
   }
 
   if (searcher?.vectorSearch != null) {

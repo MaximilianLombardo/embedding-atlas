@@ -174,6 +174,27 @@ export interface Searcher {
    * fire-and-forget, after the dataset loads. Idempotent.
    */
   warmup?(): Promise<void>;
+
+  /**
+   * Optional latent-space capability: the precomputed per-row embedding
+   * cache (id → L2-normalized vector) the searcher already maintains for
+   * hybrid reranking. The built-in `FullTextSearcher` exposes this once
+   * `warmup` has populated it; returns `null` before warmup finishes and
+   * an empty Map when warmup was skipped (dataset too large). Consumers
+   * (e.g. the chat `concept_axis` tool) must treat the Map as immutable —
+   * it is the live cache.
+   */
+  getRowVectors?(): Map<any, Float32Array> | null;
+
+  /**
+   * Optional latent-space capability: embed arbitrary text(s) into the
+   * SAME embedding space as `getRowVectors`, using the in-browser model
+   * the searcher already loaded. Vectors come back L2-normalized so a dot
+   * product equals cosine similarity. Lazily loads the model on first use.
+   * Exposed by `FullTextSearcher`; lets chat features (concept axes,
+   * steered search) embed text poles without re-plumbing the worker.
+   */
+  embedTexts?(texts: string[]): Promise<Float32Array[]>;
 }
 
 export class EmbeddingAtlas {
