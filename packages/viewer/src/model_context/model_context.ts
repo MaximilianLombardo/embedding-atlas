@@ -16,6 +16,7 @@ import {
 } from "../schemas.js";
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
+import { createRetrieveTool, type RetrieveToolContext } from "./retrieve_tool.js";
 
 /** Default name used by apply_filter when the model omits the `name` parameter. */
 const DEFAULT_FILTER_NAME = "Chat Filter";
@@ -54,11 +55,7 @@ function normalizeEcdfLayer(layer: any): any {
   const enc = layer?.encoding;
   if (!enc) return layer;
   const yIsEcdfRank = enc.y && (enc.y as any).aggregate === "ecdf-rank";
-  const xIsPlainField =
-    enc.x &&
-    "field" in enc.x &&
-    !("aggregate" in enc.x) &&
-    (enc.x as any).bin == null;
+  const xIsPlainField = enc.x && "field" in enc.x && !("aggregate" in enc.x) && (enc.x as any).bin == null;
   if (!yIsEcdfRank || !xIsPlainField) return layer;
   const xField = (enc.x as any).field;
   return {
@@ -133,6 +130,11 @@ export interface ModelContextDelegate {
   chartDelegates: Map<string, Set<ChartDelegate>>;
   container: HTMLDivElement;
   columnStyles: Record<string, ColumnStyle>;
+  /**
+   * Wiring for the `retrieve` content-retrieval tool (searcher +
+   * coordinator + current predicate). See `retrieve_tool.ts`.
+   */
+  retrieve: RetrieveToolContext;
 }
 
 export function provideModelContext(api: ModelContextAPI, delegate: ModelContextDelegate) {
@@ -177,6 +179,10 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
         return jsonResponse(result.toArray());
       },
     },
+    // Content / semantic retrieval over the text column (hybrid BM25 +
+    // vector). Lives in its own module; returns rows shaped for the
+    // citation-pill pipeline.
+    createRetrieveTool(delegate.retrieve),
     {
       name: "list_renderers",
       description:
