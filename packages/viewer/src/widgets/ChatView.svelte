@@ -279,10 +279,16 @@
 
     turns = [...turns, { role: "user", text: prompt, tools: [] }, { role: "assistant", text: "", tools: [] }];
     const assistantIdx = turns.length - 1;
+    // Pin the stream's write target to THIS tab's array. `turns` re-resolves
+    // through `bind:turns={chatTurns[activeTab.id]}`, which follows the active
+    // tab — so without capturing it here, switching tabs mid-stream would route
+    // the remaining deltas into whatever tab is active. The captured proxy stays
+    // bound to the originating tab and still persists/renders reactively.
+    const target = turns;
     // The user's own message always pulls the viewport to the bottom.
     atBottom = true;
     await scrollToBottom();
-    await runStream(messages, assistantIdx);
+    await runStream(messages, assistantIdx, target);
   }
 
   /**
@@ -291,14 +297,14 @@
    * the AbortController (A1): a clean Stop keeps whatever streamed so far
    * without decorating it as an error.
    */
-  async function runStream(messages: ChatMessage[], assistantIdx: number) {
+  async function runStream(messages: ChatMessage[], assistantIdx: number, target: ChatTurn[]) {
     if (!endpoint) return;
     const ctrl = new AbortController();
     controller = ctrl;
     pending = true;
     stopped = false;
     // Clear any prior error state — matters when retrying an errored turn.
-    const start = turns[assistantIdx];
+    const start = target[assistantIdx];
     if (start) {
       start.isError = false;
       start.errorMessage = undefined;
@@ -306,10 +312,10 @@
 
     try {
       for await (const event of streamChat(endpoint, { messages, context }, ctrl.signal)) {
-        // Mutate the *proxied* turn fetched by index — Svelte 5's $state
-        // wraps array entries in deep proxies, so the original object
-        // reference we constructed above is detached from reactivity.
-        applyEvent(assistantIdx, event);
+        // Mutate the captured `target` (this tab's array), NOT the live `turns`
+        // prop — `turns` follows the active tab, so a mid-stream tab switch would
+        // otherwise write the rest of this reply into the wrong tab.
+        applyEvent(target, assistantIdx, event);
         // Follow the stream only while the user is parked at the bottom (A3).
         if (atBottom) await scrollToBottom();
       }
@@ -319,7 +325,7 @@
       if (err instanceof DOMException && err.name === "AbortError") {
         // intentional no-op
       } else {
-        const turn = turns[assistantIdx];
+        const turn = target[assistantIdx];
         if (turn) {
           turn.isError = true;
           turn.errorMessage = err instanceof Error ? err.message : String(err);
@@ -355,9 +361,11 @@
     turn.isError = false;
     turn.errorMessage = undefined;
     turn.usage = undefined;
+    // Pin the write target to this tab's array (see `send`).
+    const target = turns;
     atBottom = true;
     await scrollToBottom();
-    await runStream(messages, assistantIdx);
+    await runStream(messages, assistantIdx, target);
   }
 
   /** Whether to offer Retry on the last (assistant) turn. */
@@ -367,8 +375,8 @@
     return last?.role === "assistant" && (last.isError === true || stopped);
   });
 
-  function applyEvent(turnIndex: number, event: ChatEvent) {
-    const turn = turns[turnIndex];
+  function applyEvent(target: ChatTurn[], turnIndex: number, event: ChatEvent) {
+    const turn = target[turnIndex];
     if (!turn) return;
     switch (event.type) {
       case "delta":
