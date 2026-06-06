@@ -178,6 +178,14 @@ def import_modules(names: list[str]):
     help="Allow execution of remote code when loading models from Hugging Face Hub.",
 )
 @click.option(
+    "--keep-embedding/--no-keep-embedding",
+    "keep_embedding",
+    default=False,
+    help="Retain the high-dimensional embedding (as a fixed-width FLOAT[N] array "
+    "column) in the output so vector RAG over the original embedding space is "
+    "possible. Off by default to preserve current output size.",
+)
+@click.option(
     "--batch-size",
     type=int,
     default=None,
@@ -377,6 +385,7 @@ def main(
     enable_projection: bool,
     model: str | None,
     trust_remote_code: bool,
+    keep_embedding: bool,
     batch_size: int | None,
     embedder: str | None,
     api_key: str | None,
@@ -419,6 +428,11 @@ def main(
 
     print(df)
 
+    # Stamp describing the embedding space (model id, dim, normalization, hash,
+    # and retained-column info). Populated by compute_projection when embeddings
+    # are computed; persisted into metadata.json for parity / vector RAG.
+    embedding_stamp: dict = {}
+
     if enable_projection and (x_column is None or y_column is None):
         # No x, y column selected, first see if text/image/vectors column is specified, if not, ask for it
         if text is None and image is None and audio is None and vector is None:
@@ -448,6 +462,7 @@ def main(
 
             x_column = find_column_name(df.columns, "projection_x")
             y_column = find_column_name(df.columns, "projection_y")
+            embedding_column = find_column_name(df.columns, "embedding")
             if neighbors_column is None:
                 neighbors_column = find_column_name(df.columns, "__neighbors")
                 new_neighbors_column = neighbors_column
@@ -498,6 +513,9 @@ def main(
                 max_concurrency=max_concurrency,
                 embedder_args=embedder_args or None,
                 umap_args=umap_args or None,
+                keep_embedding=keep_embedding,
+                embedding=embedding_column,
+                stamp_out=embedding_stamp,
             )
 
     id_column = find_column_name(df.columns, "__row_index__")
@@ -547,6 +565,8 @@ def main(
     metadata = {
         "props": props,
     }
+    if embedding_stamp:
+        metadata["embedding"] = embedding_stamp
 
     identifier = sha256_hexdigest([__version__, inputs, metadata], scope="DataSource")
     dataset = DataSource(identifier, df, metadata)

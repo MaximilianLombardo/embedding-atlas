@@ -8,9 +8,10 @@ import shutil
 import numpy as np
 import pandas as pd
 import polars as pl
+import pyarrow as pa
 import pytest
 from embedding_atlas.embedding import create_embedder
-from embedding_atlas.projection import compute_projection
+from embedding_atlas.projection import EMBEDDING_STAMP_VERSION, compute_projection
 from PIL import Image
 
 NUM_SAMPLES = 30
@@ -397,3 +398,105 @@ def test_vector_polars(vector_pl, cache_root):
     assert isinstance(result, pl.DataFrame)
     assert "projection_x" in result.columns
     assert len(result) == NUM_SAMPLES
+
+
+# ---------------------------------------------------------------------------
+# Embedding-model stamp + retained embedding column
+# ---------------------------------------------------------------------------
+
+
+def test_stamp_records_model_and_dim(text_df, cache_root):
+    """stamp_out is populated with model id and output dimensions."""
+    stamp: dict = {}
+    compute_projection(
+        text_df,
+        inputs="text",
+        modality="text",
+        embedder=_fake_embedder,
+        model="my-embedding-model",
+        cache_root=cache_root,
+        stamp_out=stamp,
+    )
+    assert stamp["model"] == "my-embedding-model"
+    assert stamp["dimensions"] == EMBEDDING_DIM
+    assert stamp["modality"] == "text"
+    assert stamp["version"] == EMBEDDING_STAMP_VERSION
+    assert isinstance(stamp["hash"], str) and len(stamp["hash"]) > 0
+    assert stamp["normalization"] in ("l2", "none")
+    # Embedding not retained by default -> no column info in the stamp.
+    assert "column" not in stamp
+
+
+def test_keep_embedding_retains_fixed_width_column(text_df, cache_root):
+    """--keep-embedding retains a fixed-width FLOAT[N] array column."""
+    stamp: dict = {}
+    result = compute_projection(
+        text_df,
+        inputs="text",
+        modality="text",
+        embedder=_fake_embedder,
+        cache_root=cache_root,
+        keep_embedding=True,
+        embedding="embedding",
+        stamp_out=stamp,
+    )
+    assert "embedding" in result.columns
+    # The retained column is a fixed-width array of length EMBEDDING_DIM.
+    first = result["embedding"].iloc[0]
+    assert len(list(first)) == EMBEDDING_DIM
+    # Stamp records the retained column name + dim.
+    assert stamp["column"] == "embedding"
+    assert stamp["columnDim"] == EMBEDDING_DIM
+
+
+def test_no_keep_embedding_discards_column(text_df, cache_root):
+    """Default behavior discards the embedding (no column added)."""
+    result = compute_projection(
+        text_df,
+        inputs="text",
+        modality="text",
+        embedder=_fake_embedder,
+        cache_root=cache_root,
+    )
+    assert "embedding" not in result.columns
+
+
+def test_stamp_detects_l2_normalization(text_df, cache_root):
+    """L2-normalized embeddings are flagged as normalization='l2'."""
+
+    async def unit_embedder(batch, *, model, embedder_args):
+        rng = np.random.RandomState(len(batch))
+        vecs = rng.randn(len(batch), EMBEDDING_DIM).astype(np.float32)
+        vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs
+
+    stamp: dict = {}
+    compute_projection(
+        text_df,
+        inputs="text",
+        modality="text",
+        embedder=unit_embedder,
+        cache_root=cache_root,
+        stamp_out=stamp,
+    )
+    assert stamp["normalization"] == "l2"
+
+
+def test_retained_embedding_column_survives_parquet(text_df, cache_root):
+    """The retained FLOAT[N] column roundtrips through parquet as fixed_size_list."""
+    import pyarrow.parquet as pq
+    from embedding_atlas.utils import to_parquet_bytes
+
+    result = compute_projection(
+        text_df,
+        inputs="text",
+        modality="text",
+        embedder=_fake_embedder,
+        cache_root=cache_root,
+        keep_embedding=True,
+        embedding="embedding",
+    )
+    table = pq.read_table(io.BytesIO(to_parquet_bytes(result)))
+    field = table.schema.field("embedding")
+    assert pa.types.is_fixed_size_list(field.type)
+    assert field.type.list_size == EMBEDDING_DIM
