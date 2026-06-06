@@ -60,13 +60,89 @@
   }: Props = $props();
 
   let pending = $state(false);
+  // Aborts the in-flight stream when the user clicks Stop (A1). Held in
+  // state so the Stop button can appear/disappear with `pending`.
+  let controller: AbortController | null = $state(null);
+  // True when the last stream was halted by the user (A1). Lets the Retry
+  // affordance (A5) appear after a Stop, not only after an error.
+  let stopped = $state(false);
+  // True when the scroller is pinned to (or near) the bottom. Drives the
+  // smart-autoscroll behaviour (A3): we only follow new output while the
+  // user is already at the bottom, so reading earlier output isn't yanked.
+  let atBottom = $state(true);
   // svelte-ignore state_referenced_locally
   let draft = $state(initialPrompt ?? "");
   let scroller: HTMLDivElement | undefined;
 
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
-    return DOMPurify.sanitize(raw);
+    const clean = DOMPurify.sanitize(raw);
+    // Inject a copy button into each code block (A6). Done *after* sanitize
+    // so the trusted button markup isn't stripped; a delegated click handler
+    // on the prose container (`onProseClick`) performs the actual copy.
+    return clean.replaceAll(
+      "<pre>",
+      '<pre><button class="copy-code-btn" type="button" aria-label="Copy code" title="Copy code">Copy</button>',
+    );
+  }
+
+  /** Write text to the clipboard, swallowing failures (denied permission,
+   *  insecure context). A6. */
+  async function copyText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      console.error("Copy failed", e);
+      return false;
+    }
+  }
+
+  // Index of the assistant turn whose "copy message" button was just
+  // clicked, for a brief "Copied" confirmation. Cleared on a timer.
+  let copiedIdx: number | null = $state(null);
+  async function copyMessage(i: number, text: string) {
+    if (await copyText(text)) {
+      copiedIdx = i;
+      setTimeout(() => {
+        if (copiedIdx === i) copiedIdx = null;
+      }, 1200);
+    }
+  }
+
+  /**
+   * Delegated handler for the per-code-block copy buttons injected by
+   * `renderMarkdown` (A6). Copies the block's <code> text (not the button
+   * label) and flashes a transient "Copied".
+   */
+  async function onProseClick(e: MouseEvent) {
+    const btn = (e.target as HTMLElement | null)?.closest?.(".copy-code-btn") as HTMLElement | null;
+    if (!btn) return;
+    const pre = btn.closest("pre");
+    const code = pre?.querySelector("code")?.textContent ?? "";
+    if (await copyText(code)) {
+      const prev = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 1200);
+    }
+  }
+
+  /**
+   * Svelte action that delegates clicks on the prose container to
+   * `onProseClick` (A6). Attaching the listener via an action rather than an
+   * inline `onclick` keeps the real interactive elements (the injected copy
+   * buttons) as the accessible targets, so the static container isn't flagged
+   * for missing keyboard handlers.
+   */
+  function copyCodeDelegate(node: HTMLElement) {
+    node.addEventListener("click", onProseClick);
+    return {
+      destroy() {
+        node.removeEventListener("click", onProseClick);
+      },
+    };
   }
 
   /** Image blocks pulled from a tool_result content list. */
@@ -116,6 +192,24 @@
     return out;
   }
 
+  /**
+   * Collect every image emitted by tools in this assistant turn — parallel
+   * to `collectChartSpecs` (A4). Screenshots from `get_full_screenshot` and
+   * friends otherwise render only inside the collapsed `<details>` tool
+   * strip, so they're invisible by default. Lifting them to the turn level
+   * surfaces them in the conversation flow alongside the assistant's prose.
+   * Each entry keeps the originating tool name for the image `alt`.
+   */
+  function collectImages(tools: ChatToolCall[]): Array<{ media_type: string; data: string; toolName: string }> {
+    const out: Array<{ media_type: string; data: string; toolName: string }> = [];
+    for (const tool of tools) {
+      for (const img of imageBlocks(tool.resultBlocks)) {
+        out.push({ ...img, toolName: tool.name });
+      }
+    }
+    return out;
+  }
+
   /** Concatenated text blocks from a tool_result content list. */
   function textFromBlocks(blocks: ChatContentBlock[] | undefined): string {
     if (!blocks) return "";
@@ -154,6 +248,25 @@
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }
 
+  /**
+   * Track whether the viewport is parked at the bottom (A3). A small
+   * threshold (40px) treats "almost at the bottom" as at-bottom so a
+   * trailing line of padding doesn't flip the state and strand the
+   * "Jump to latest" button while the user is effectively following.
+   */
+  function onScroll() {
+    if (!scroller) return;
+    atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;
+  }
+
+  /** Anthropic-style message list from a set of turns. Drops empty
+   *  assistant turns (a failed/aborted attempt that produced no text). */
+  function messagesFrom(history: ChatTurn[]): ChatMessage[] {
+    return history
+      .filter((t) => t.role === "user" || t.text.length > 0)
+      .map((t) => ({ role: t.role, content: t.text }));
+  }
+
   async function send() {
     if (!endpoint) return;
     const prompt = draft.trim();
@@ -162,30 +275,97 @@
 
     // Build the message list from the *previous* turns (this user prompt is
     // included separately so we don't depend on the not-yet-persisted state).
-    const messages: ChatMessage[] = [
-      ...turns.filter((t) => t.role === "user" || t.text.length > 0).map((t) => ({ role: t.role, content: t.text })),
-      { role: "user", content: prompt },
-    ];
+    const messages: ChatMessage[] = [...messagesFrom(turns), { role: "user", content: prompt }];
 
     turns = [...turns, { role: "user", text: prompt, tools: [] }, { role: "assistant", text: "", tools: [] }];
     const assistantIdx = turns.length - 1;
-    pending = true;
+    // The user's own message always pulls the viewport to the bottom.
+    atBottom = true;
     await scrollToBottom();
+    await runStream(messages, assistantIdx);
+  }
+
+  /**
+   * Stream one assistant response into `turns[assistantIdx]`. Factored out
+   * of `send()` so Retry (A5) can re-run it against an existing turn. Owns
+   * the AbortController (A1): a clean Stop keeps whatever streamed so far
+   * without decorating it as an error.
+   */
+  async function runStream(messages: ChatMessage[], assistantIdx: number) {
+    if (!endpoint) return;
+    const ctrl = new AbortController();
+    controller = ctrl;
+    pending = true;
+    stopped = false;
+    // Clear any prior error state — matters when retrying an errored turn.
+    const start = turns[assistantIdx];
+    if (start) {
+      start.isError = false;
+      start.errorMessage = undefined;
+    }
 
     try {
-      for await (const event of streamChat(endpoint, { messages, context })) {
+      for await (const event of streamChat(endpoint, { messages, context }, ctrl.signal)) {
         // Mutate the *proxied* turn fetched by index — Svelte 5's $state
         // wraps array entries in deep proxies, so the original object
         // reference we constructed above is detached from reactivity.
         applyEvent(assistantIdx, event);
-        await scrollToBottom();
+        // Follow the stream only while the user is parked at the bottom (A3).
+        if (atBottom) await scrollToBottom();
       }
     } catch (err) {
-      turns[assistantIdx].text += `\n\n_Error: ${err instanceof Error ? err.message : String(err)}_`;
+      // A clean Stop (A1) surfaces as an AbortError: keep the partial
+      // response, no error strip.
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // intentional no-op
+      } else {
+        const turn = turns[assistantIdx];
+        if (turn) {
+          turn.isError = true;
+          turn.errorMessage = err instanceof Error ? err.message : String(err);
+        }
+      }
     } finally {
       pending = false;
+      controller = null;
     }
   }
+
+  /** Abort the in-flight stream (A1). */
+  function stop() {
+    stopped = true;
+    controller?.abort();
+  }
+
+  /**
+   * Retry the last assistant turn (A5). Resets the turn in place (drops its
+   * partial text / tools / error / usage) and re-streams from the prior
+   * history. Offered when the last turn errored or was stopped.
+   */
+  async function retry() {
+    if (pending) return;
+    const assistantIdx = turns.length - 1;
+    const turn = turns[assistantIdx];
+    if (!turn || turn.role !== "assistant") return;
+    // History up to (not including) this assistant turn — ends at the user
+    // prompt that produced it.
+    const messages = messagesFrom(turns.slice(0, assistantIdx));
+    turn.text = "";
+    turn.tools = [];
+    turn.isError = false;
+    turn.errorMessage = undefined;
+    turn.usage = undefined;
+    atBottom = true;
+    await scrollToBottom();
+    await runStream(messages, assistantIdx);
+  }
+
+  /** Whether to offer Retry on the last (assistant) turn. */
+  let canRetry = $derived.by(() => {
+    if (pending) return false;
+    const last = turns[turns.length - 1];
+    return last?.role === "assistant" && (last.isError === true || stopped);
+  });
 
   function applyEvent(turnIndex: number, event: ChatEvent) {
     const turn = turns[turnIndex];
@@ -215,10 +395,17 @@
         break;
       }
       case "error":
-        turn.text += `\n\n_Error: ${event.message}_`;
+        // Distinct error state (A5) instead of italic text buried in the
+        // bubble — rendered as a red strip with Retry.
+        turn.isError = true;
+        turn.errorMessage = event.message;
+        break;
+      case "done":
+        // Terminal event carries token accounting (A6); echo/legacy
+        // backends may omit it.
+        if (event.usage) turn.usage = event.usage;
         break;
       case "context":
-      case "done":
         break;
     }
   }
@@ -282,124 +469,179 @@
 </script>
 
 <div class="flex flex-col h-full min-h-0">
-  <div bind:this={scroller} class="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4 text-sm">
-    {#if turns.length === 0}
-      <div class="text-slate-500 dark:text-slate-400">
-        Ask Claude about the rows you have selected — or about the whole dataset if nothing is selected. The agent has
-        access to <code>run_sql_query</code> and the rest of the viewer's tool surface, plus a small sample of the rows in
-        scope up front.
-      </div>
-    {/if}
-    {#each turns as turn, i (i)}
-      <div class="space-y-2">
-        {#if turn.role === "user"}
-          <div class="flex justify-end">
-            <div class="rounded-lg px-3 py-2 max-w-[80%] bg-blue-600 text-white whitespace-pre-wrap">
-              {turn.text}
-            </div>
-          </div>
-        {:else}
-          <div class="flex flex-col gap-2">
-            {#each turn.tools as tool (tool.id)}
-              <details
-                class="rounded-md border text-xs"
-                class:border-slate-300={!tool.isError}
-                class:dark:border-slate-700={!tool.isError}
-                class:border-red-400={tool.isError}
-              >
-                <summary class="px-2 py-1 cursor-pointer select-none text-slate-600 dark:text-slate-300">
-                  {tool.isError ? "⚠" : "⚙"} <span class="font-mono">{tool.name}</span>
-                  {#if tool.result === undefined}
-                    <span class="text-slate-400">…</span>
-                  {/if}
-                </summary>
-                <div class="px-2 py-1 border-t border-slate-200 dark:border-slate-700 space-y-1">
-                  <pre
-                    class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">{JSON.stringify(
-                      tool.input,
-                      null,
-                      2,
-                    )}</pre>
-                  {#if tool.result !== undefined}
-                    {#if tool.resultBlocks}
-                      {@const text = textFromBlocks(tool.resultBlocks)}
-                      {@const images = imageBlocks(tool.resultBlocks)}
-                      {@const charts = chartBlocks(tool.resultBlocks)}
-                      {#if text}
-                        <pre
-                          class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
-                      {/if}
-                      {#if charts.length > 0}
-                        <div class="text-slate-500 dark:text-slate-400 italic">
-                          [{charts.length} chart{charts.length === 1 ? "" : "s"} rendered below]
-                        </div>
-                      {/if}
-                      {#each images as img, idx (idx)}
-                        <!-- Click handler converts the base64 data URL to a blob URL
-                             before opening — modern browsers (Chrome, Safari, Firefox)
-                             block direct navigation to data: URLs in new tabs as a
-                             phishing mitigation. blob: URLs are allowed. -->
-                        <button
-                          type="button"
-                          class="block p-0 border-0 bg-transparent cursor-zoom-in"
-                          title="Open image in new tab"
-                          onclick={() => openImageInNewTab(img.media_type, img.data)}
-                        >
-                          <img
-                            src={`data:${img.media_type};base64,${img.data}`}
-                            alt={`Tool result from ${tool.name}`}
-                            class="chat-tool-image rounded border border-slate-200 dark:border-slate-700"
-                          />
-                        </button>
-                      {/each}
-                      {#if !text && images.length === 0 && charts.length === 0}
-                        <pre
-                          class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[no displayable content]</pre>
-                      {/if}
-                    {:else}
-                      <pre
-                        class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
-                    {/if}
-                  {/if}
-                </div>
-              </details>
-            {/each}
-            {#each collectChartSpecs(turn.tools) as cb, idx (idx)}
-              {#if chartContext}
-                <InlineChartView spec={cb.spec} context={chartContext} onSaveChart={onSaveChart} />
-              {:else}
-                <pre
-                  class="whitespace-pre-wrap break-words font-mono text-xs text-slate-500 dark:text-slate-400">[chart spec emitted, but no chart context available to render it]</pre>
-              {/if}
-            {/each}
-            {#if turn.text}
-              <div class="prose prose-sm dark:prose-invert max-w-none">
-                {@html renderMarkdown(turn.text)}
+  <div class="relative flex-1 min-h-0">
+    <div bind:this={scroller} onscroll={onScroll} class="absolute inset-0 overflow-y-auto px-4 py-3 space-y-4 text-sm">
+      {#if turns.length === 0}
+        <div class="text-slate-500 dark:text-slate-400">
+          Ask Claude about the rows you have selected — or about the whole dataset if nothing is selected. The agent has
+          access to <code>run_sql_query</code> and the rest of the viewer's tool surface, plus a small sample of the rows
+          in scope up front.
+        </div>
+      {/if}
+      {#each turns as turn, i (i)}
+        <div class="space-y-2">
+          {#if turn.role === "user"}
+            <div class="flex justify-end">
+              <div class="rounded-lg px-3 py-2 max-w-[80%] bg-blue-600 text-white whitespace-pre-wrap">
+                {turn.text}
               </div>
-            {/if}
-            {#if collectCitedRows(turn.tools).length > 0}
-              <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                <span class="select-none">Sources:</span>
-                {#each collectCitedRows(turn.tools) as citation, idx (idx)}
+            </div>
+          {:else}
+            <div class="flex flex-col gap-2">
+              {#each turn.tools as tool (tool.id)}
+                <details
+                  class="rounded-md border text-xs"
+                  class:border-slate-300={!tool.isError}
+                  class:dark:border-slate-700={!tool.isError}
+                  class:border-red-400={tool.isError}
+                >
+                  <summary class="px-2 py-1 cursor-pointer select-none text-slate-600 dark:text-slate-300">
+                    {tool.isError ? "⚠" : "⚙"} <span class="font-mono">{tool.name}</span>
+                    {#if tool.result === undefined}
+                      <span class="text-slate-400">…</span>
+                    {/if}
+                  </summary>
+                  <div class="px-2 py-1 border-t border-slate-200 dark:border-slate-700 space-y-1">
+                    <pre
+                      class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">{JSON.stringify(
+                        tool.input,
+                        null,
+                        2,
+                      )}</pre>
+                    {#if tool.result !== undefined}
+                      {#if tool.resultBlocks}
+                        {@const text = textFromBlocks(tool.resultBlocks)}
+                        {@const images = imageBlocks(tool.resultBlocks)}
+                        {@const charts = chartBlocks(tool.resultBlocks)}
+                        {#if text}
+                          <pre
+                            class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{text}</pre>
+                        {/if}
+                        {#if charts.length > 0}
+                          <div class="text-slate-500 dark:text-slate-400 italic">
+                            [{charts.length} chart{charts.length === 1 ? "" : "s"} rendered below]
+                          </div>
+                        {/if}
+                        {#if images.length > 0}
+                          <!-- Images are lifted to the turn level (A4) and shown
+                             in the conversation flow below; just note them here. -->
+                          <div class="text-slate-500 dark:text-slate-400 italic">
+                            [{images.length} image{images.length === 1 ? "" : "s"} shown below]
+                          </div>
+                        {/if}
+                        {#if !text && images.length === 0 && charts.length === 0}
+                          <pre
+                            class="whitespace-pre-wrap break-words font-mono text-slate-500 dark:text-slate-400">[no displayable content]</pre>
+                        {/if}
+                      {:else}
+                        <pre
+                          class="whitespace-pre-wrap break-words font-mono text-slate-700 dark:text-slate-300">{tool.result}</pre>
+                      {/if}
+                    {/if}
+                  </div>
+                </details>
+              {/each}
+              {#each collectChartSpecs(turn.tools) as cb, idx (idx)}
+                {#if chartContext}
+                  <InlineChartView spec={cb.spec} context={chartContext} onSaveChart={onSaveChart} />
+                {:else}
+                  <pre
+                    class="whitespace-pre-wrap break-words font-mono text-xs text-slate-500 dark:text-slate-400">[chart spec emitted, but no chart context available to render it]</pre>
+                {/if}
+              {/each}
+              {#each collectImages(turn.tools) as img, idx (idx)}
+                <!-- Screenshot lifted to the turn flow (A4). Click converts the
+                   base64 data URL to a blob URL before opening — browsers block
+                   direct navigation to data: URLs in new tabs (phishing
+                   mitigation); blob: URLs are allowed. -->
+                <button
+                  type="button"
+                  class="block p-0 border-0 bg-transparent cursor-zoom-in"
+                  title="Open image in new tab"
+                  onclick={() => openImageInNewTab(img.media_type, img.data)}
+                >
+                  <img
+                    src={`data:${img.media_type};base64,${img.data}`}
+                    alt={`Screenshot from ${img.toolName}`}
+                    class="chat-turn-image rounded border border-slate-200 dark:border-slate-700"
+                  />
+                </button>
+              {/each}
+              {#if turn.text}
+                <div class="group relative">
+                  <!-- Delegated click handler powers the per-code-block copy
+                     buttons injected by renderMarkdown (A6). -->
+                  <div class="prose prose-sm dark:prose-invert max-w-none" use:copyCodeDelegate>
+                    {@html renderMarkdown(turn.text)}
+                  </div>
                   <button
                     type="button"
-                    class="chat-source-pill"
-                    title={pillTitle(citation)}
-                    onclick={() => onPillClick?.(citation.id)}
-                    disabled={!onPillClick}
+                    class="chat-copy-msg opacity-0 group-hover:opacity-100"
+                    title="Copy message"
+                    onclick={() => copyMessage(i, turn.text)}
                   >
-                    {pillLabel(citation)}
+                    {copiedIdx === i ? "Copied" : "Copy"}
                   </button>
-                {/each}
-              </div>
-            {/if}
-            {#if pending && i === turns.length - 1 && turn.text === "" && turn.tools.length === 0}
-              <Spinner status="Thinking…" />
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {/each}
+                </div>
+              {/if}
+              {#if turn.isError}
+                <div class="chat-error-strip">
+                  <span aria-hidden="true">⚠</span>
+                  <span>{turn.errorMessage ?? "Something went wrong."}</span>
+                </div>
+              {/if}
+              {#if turn.usage}
+                <div
+                  class="text-[0.7rem] text-slate-400 dark:text-slate-500 select-none"
+                  title="Token usage for this turn"
+                >
+                  {turn.usage.input_tokens.toLocaleString()} in · {turn.usage.output_tokens.toLocaleString()} out
+                </div>
+              {/if}
+              {#if collectCitedRows(turn.tools).length > 0}
+                <div class="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  <span class="select-none">Sources:</span>
+                  {#each collectCitedRows(turn.tools) as citation, idx (idx)}
+                    <button
+                      type="button"
+                      class="chat-source-pill"
+                      title={pillTitle(citation)}
+                      onclick={() => onPillClick?.(citation.id)}
+                      disabled={!onPillClick}
+                    >
+                      {pillLabel(citation)}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+              {#if canRetry && i === turns.length - 1}
+                <div>
+                  <button type="button" class="chat-retry-btn" onclick={retry} title="Re-run this response">
+                    ↻ Retry
+                  </button>
+                </div>
+              {/if}
+              {#if pending && i === turns.length - 1 && turn.text === "" && turn.tools.length === 0}
+                <Spinner status="Thinking…" />
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+    {#if !atBottom && pending}
+      <button
+        type="button"
+        class="chat-jump-btn"
+        title="Jump to latest"
+        onclick={() => {
+          atBottom = true;
+          scrollToBottom();
+        }}
+      >
+        ↓ Jump to latest
+      </button>
+    {/if}
   </div>
 
   <div class="border-t border-slate-200 dark:border-slate-700 p-2">
@@ -418,15 +660,20 @@
         disabled={pending}
         class="w-full resize-none bg-transparent outline-none px-2 py-1 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 disabled:opacity-50"
       ></textarea>
+      {#if pending}
+        <div class="flex justify-end px-1 pt-1">
+          <button type="button" class="chat-stop-btn" onclick={stop} title="Stop generating"> ◼ Stop </button>
+        </div>
+      {/if}
     {/if}
   </div>
 </div>
 
 <style>
-  /* Cap the inline screenshot at a sane size in the tool-result strip; the
-     anchor wrapping the image opens the full-resolution data URL in a new
-     tab on click (simpler than a lightbox; matches issue #3 acceptance). */
-  .chat-tool-image {
+  /* Cap the turn-level screenshot (A4) at a sane size; the button wrapping
+     the image opens the full-resolution data URL in a new tab on click
+     (simpler than a lightbox). */
+  .chat-turn-image {
     display: block;
     max-width: 400px;
     max-height: 300px;
@@ -435,6 +682,149 @@
     margin: 0.25rem 0;
     object-fit: contain;
     cursor: zoom-in;
+  }
+
+  /* Hover-revealed "Copy message" button on assistant bubbles (A6). */
+  .chat-copy-msg {
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 0.0625rem 0.4rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: rgb(248 250 252); /* slate-50 */
+    color: rgb(71 85 105); /* slate-600 */
+    font-size: 0.7rem;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: opacity 120ms ease;
+  }
+  .chat-copy-msg:hover {
+    background: rgb(226 232 240); /* slate-200 */
+  }
+  :global(.dark) .chat-copy-msg {
+    border-color: rgb(51 65 85); /* slate-700 */
+    background: rgb(30 41 59); /* slate-800 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+
+  /* Per-code-block copy button injected by renderMarkdown (A6). Global
+     because the <pre>/<button> live inside {@html}-rendered prose. */
+  :global(.prose pre) {
+    position: relative;
+  }
+  :global(.copy-code-btn) {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    padding: 0.0625rem 0.4rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(71 85 105); /* slate-600 */
+    background: rgb(30 41 59); /* slate-800 */
+    color: rgb(226 232 240); /* slate-200 */
+    font-size: 0.65rem;
+    line-height: 1.2;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  :global(.prose pre:hover .copy-code-btn),
+  :global(.copy-code-btn:focus-visible) {
+    opacity: 1;
+  }
+
+  /* Error strip on a failed assistant turn (A5). */
+  .chat-error-strip {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid rgb(248 113 113); /* red-400 */
+    border-radius: 0.375rem;
+    background: rgb(254 242 242); /* red-50 */
+    color: rgb(153 27 27); /* red-800 */
+    font-size: 0.8rem;
+    line-height: 1.3;
+  }
+  :global(.dark) .chat-error-strip {
+    background: rgb(69 10 10 / 0.4); /* red-950-ish */
+    color: rgb(252 165 165); /* red-300 */
+  }
+
+  /* Retry button under an errored/stopped turn (A5). */
+  .chat-retry-btn {
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: transparent;
+    color: rgb(71 85 105); /* slate-600 */
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  .chat-retry-btn:hover {
+    background: rgb(241 245 249); /* slate-100 */
+    border-color: rgb(148 163 184); /* slate-400 */
+  }
+  :global(.dark) .chat-retry-btn {
+    border-color: rgb(51 65 85); /* slate-700 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  :global(.dark) .chat-retry-btn:hover {
+    background: rgb(30 41 59); /* slate-800 */
+  }
+
+  /* Floating "Jump to latest" button (A3). */
+  .chat-jump-btn {
+    position: absolute;
+    bottom: 0.75rem;
+    right: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: rgb(255 255 255);
+    color: rgb(51 65 85); /* slate-700 */
+    font-size: 0.72rem;
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
+    cursor: pointer;
+  }
+  .chat-jump-btn:hover {
+    background: rgb(241 245 249); /* slate-100 */
+  }
+  :global(.dark) .chat-jump-btn {
+    border-color: rgb(51 65 85); /* slate-700 */
+    background: rgb(15 23 42); /* slate-900 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+
+  /* Stop button while streaming (A1). */
+  .chat-stop-btn {
+    padding: 0.125rem 0.6rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: transparent;
+    color: rgb(71 85 105); /* slate-600 */
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  .chat-stop-btn:hover {
+    background: rgb(254 242 242); /* red-50 */
+    border-color: rgb(248 113 113); /* red-400 */
+    color: rgb(153 27 27); /* red-800 */
+  }
+  :global(.dark) .chat-stop-btn {
+    border-color: rgb(51 65 85); /* slate-700 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  :global(.dark) .chat-stop-btn:hover {
+    background: rgb(69 10 10 / 0.4);
+    border-color: rgb(248 113 113);
+    color: rgb(252 165 165);
   }
 
   /* Citation pills — small clickable badges in the "Sources:" footer.
