@@ -242,6 +242,17 @@ export class FullTextSearcher implements Searcher {
     onStatus?.("");
   }
 
+  /**
+   * Read-only view of the precomputed per-row embedding cache, for
+   * latent-space helpers (see `latent_ops.ts`). Returns `null` until
+   * warmup has populated it, and an empty Map when warmup was skipped
+   * (dataset too large). Callers must treat the Map as immutable — it is
+   * the live cache backing hybrid search.
+   */
+  getRowVectors(): Map<RowID, Float32Array> | null {
+    return this.allRowVectors;
+  }
+
   predicateString(predicate: any | null): string | null {
     if (predicate != null && predicate.toString() != "") {
       return predicate.toString();
@@ -366,9 +377,7 @@ export class FullTextSearcher implements Searcher {
     // RRF fusion. Lexical rank = Orama's input order (BM25-sorted).
     // Vector rank = candidates re-sorted by cosine descending.
     const k = 60;
-    const vecOrder = candidates
-      .map((_, i) => i)
-      .sort((a, b) => vecScores[b] - vecScores[a]);
+    const vecOrder = candidates.map((_, i) => i).sort((a, b) => vecScores[b] - vecScores[a]);
     const vecRank = new Map<number, number>();
     vecOrder.forEach((idx, rank) => vecRank.set(idx, rank + 1));
 

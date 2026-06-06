@@ -2,10 +2,16 @@
 
 import json
 
+import duckdb
+import pytest
+
 from embedding_atlas.chat import (
     CITED_ROWS_CAP,
     _build_system_prompt,
     _extract_cited_rows,
+    _guard_select,
+    _looks_safe_predicate,
+    _run_sql_tool,
 )
 
 
@@ -180,3 +186,112 @@ def test_cited_rows_empty_for_non_string_content():
 def test_cited_rows_empty_when_rows_missing():
     payload = json.dumps({"row_count": 0})
     assert _extract_cited_rows(payload, "id") == []
+
+
+# ─── read-only SQL guard ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def con():
+    c = duckdb.connect(":memory:")
+    c.sql("CREATE TABLE dataset AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, name)")
+    yield c
+    c.close()
+
+
+# Statements that must be ACCEPTED (plain reads, including CTEs).
+ACCEPTED_SQL = [
+    "SELECT * FROM dataset",
+    "select id, name from dataset where id > 0",
+    "WITH x AS (SELECT id FROM dataset) SELECT * FROM x",
+    "with recent as (select * from dataset where id > 1) select count(*) from recent",
+    "SELECT COUNT(*) FROM dataset",
+    "  SELECT 1  ",
+    "SELECT * FROM dataset;",  # trailing semicolon is stripped, single statement
+]
+
+# Statements that must be REJECTED (writes, DDL, side-effecting, multi-stmt).
+REJECTED_SQL = [
+    "COPY dataset TO '/tmp/exfil.csv'",
+    "COPY (SELECT * FROM dataset) TO '/tmp/exfil.csv'",
+    "ATTACH 'evil.db' AS evil",
+    "ATTACH 'evil.db'",
+    "DETACH evil",
+    "PRAGMA database_list",  # parses as SELECT but must be blocked lexically
+    "pragma version",
+    "INSTALL httpfs",
+    "LOAD httpfs",
+    "SET enable_external_access=true",
+    "RESET memory_limit",
+    "CALL pragma_version()",
+    "INSERT INTO dataset VALUES (3, 'c')",
+    "UPDATE dataset SET name='x'",
+    "DELETE FROM dataset",
+    "CREATE TABLE evil AS SELECT 1",
+    "DROP TABLE dataset",
+    "SELECT 1; DROP TABLE dataset",  # multiple statements
+    "SELECT 1; SELECT 2",  # multiple statements, both reads
+    "",  # empty
+    "   ",  # whitespace only
+    # CTE-wrapped write: DuckDB's parser rejects DML inside a CTE, so the
+    # guard surfaces a parse error rather than silently accepting it.
+    "WITH w AS (INSERT INTO dataset VALUES (9, 'z') RETURNING id) SELECT * FROM w",
+]
+
+
+@pytest.mark.parametrize("sql", ACCEPTED_SQL)
+def test_guard_accepts_reads(con, sql):
+    ok, error = _guard_select(con, sql)
+    assert ok, f"expected accept, got error: {error!r}"
+    assert error is None
+
+
+@pytest.mark.parametrize("sql", REJECTED_SQL)
+def test_guard_rejects_non_reads(con, sql):
+    ok, error = _guard_select(con, sql)
+    assert not ok, f"expected reject for: {sql!r}"
+    assert isinstance(error, str) and error
+
+
+def test_run_sql_tool_executes_select(con):
+    text, is_error = _run_sql_tool(con, "SELECT id, name FROM dataset ORDER BY id")
+    assert not is_error
+    payload = json.loads(text)
+    assert payload["row_count"] == 2
+    assert payload["rows"][0]["name"] == "a"
+
+
+def test_run_sql_tool_blocks_copy(con):
+    text, is_error = _run_sql_tool(con, "COPY dataset TO '/tmp/exfil.csv'")
+    assert is_error
+    assert "read-only" in text.lower() or "allowed" in text.lower()
+
+
+def test_run_sql_tool_blocks_cte_wrapped_write(con):
+    text, is_error = _run_sql_tool(
+        con, "WITH w AS (INSERT INTO dataset VALUES (9,'z') RETURNING id) SELECT * FROM w"
+    )
+    assert is_error
+
+
+def test_run_sql_tool_accepts_plain_cte(con):
+    text, is_error = _run_sql_tool(
+        con, "WITH x AS (SELECT id FROM dataset) SELECT count(*) AS n FROM x"
+    )
+    assert not is_error
+    payload = json.loads(text)
+    assert payload["rows"][0]["n"] == 2
+
+
+# ─── predicate guard ───────────────────────────────────────────────────────
+
+
+def test_predicate_guard_accepts_simple():
+    assert _looks_safe_predicate("year > 2020 AND domain = 'x'")
+    assert _looks_safe_predicate(None)
+
+
+def test_predicate_guard_rejects_semicolon_and_comments():
+    assert not _looks_safe_predicate("1=1; DROP TABLE dataset")
+    assert not _looks_safe_predicate("1=1 -- comment")
+    assert not _looks_safe_predicate("1=1 /* comment */")

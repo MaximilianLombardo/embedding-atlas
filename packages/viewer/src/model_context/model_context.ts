@@ -16,6 +16,9 @@ import {
 } from "../schemas.js";
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
+import { validateChartSpec } from "./chart_spec_guard.js";
+import { createRetrieveTool, type RetrieveToolContext } from "./retrieve_tool.js";
+import { visionTools } from "./vision_tools.js";
 
 /** Default name used by apply_filter when the model omits the `name` parameter. */
 const DEFAULT_FILTER_NAME = "Chat Filter";
@@ -54,11 +57,7 @@ function normalizeEcdfLayer(layer: any): any {
   const enc = layer?.encoding;
   if (!enc) return layer;
   const yIsEcdfRank = enc.y && (enc.y as any).aggregate === "ecdf-rank";
-  const xIsPlainField =
-    enc.x &&
-    "field" in enc.x &&
-    !("aggregate" in enc.x) &&
-    (enc.x as any).bin == null;
+  const xIsPlainField = enc.x && "field" in enc.x && !("aggregate" in enc.x) && (enc.x as any).bin == null;
   if (!yIsEcdfRank || !xIsPlainField) return layer;
   const xField = (enc.x as any).field;
   return {
@@ -133,6 +132,11 @@ export interface ModelContextDelegate {
   chartDelegates: Map<string, Set<ChartDelegate>>;
   container: HTMLDivElement;
   columnStyles: Record<string, ColumnStyle>;
+  /**
+   * Wiring for the `retrieve` content-retrieval tool (searcher +
+   * coordinator + current predicate). See `retrieve_tool.ts`.
+   */
+  retrieve: RetrieveToolContext;
 }
 
 export function provideModelContext(api: ModelContextAPI, delegate: ModelContextDelegate) {
@@ -177,6 +181,10 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
         return jsonResponse(result.toArray());
       },
     },
+    // Content / semantic retrieval over the text column (hybrid BM25 +
+    // vector). Lives in its own module; returns rows shaped for the
+    // citation-pill pipeline.
+    createRetrieveTool(delegate.retrieve),
     {
       name: "list_renderers",
       description:
@@ -245,6 +253,12 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
         additionalProperties: false,
       },
       execute: async (params: { spec: any }) => {
+        // Security gate: reject unknown chart types, prototype-pollution keys,
+        // and non-read-only embedded SQL before the schema (shape) check.
+        const guard = validateChartSpec(params.spec);
+        if (!guard.ok) {
+          return jsonResponse({ error: "Spec rejected", details: guard.error });
+        }
         // Validate schema.
         let validateResult = validate(params.spec, schemaBuiltinChartSpec);
         if (validateResult.valid) {
@@ -301,6 +315,15 @@ Notes:
         additionalProperties: false,
       },
       execute: async (params: { spec: any }) => {
+        // Security gate: reject unknown chart types, prototype-pollution keys,
+        // and non-read-only embedded SQL before shape validation / rendering.
+        const guard = validateChartSpec(params.spec);
+        if (!guard.ok) {
+          return jsonResponse({
+            error: "Spec rejected; no chart was rendered.",
+            details: guard.error,
+          });
+        }
         const validateResult = validate(params.spec, schemaBuiltinChartSpec);
         if (!validateResult.valid) {
           return jsonResponse({
@@ -679,7 +702,14 @@ Other independent filter sources (the embedding brush, predicates the user added
     },
     {
       name: "get_full_screenshot",
-      description: "Get a full screenshot of the application",
+      description: `Get a full screenshot of the ENTIRE application (all panels, toolbars, chat, and the embedding together).
+
+Use this ONLY for questions about app CHROME / LAYOUT — "what panels are open", "where is the settings button", "is the table visible", "what does the dashboard arrangement look like". It captures everything, so the embedding is small and surrounded by distracting UI.
+
+For anything ABOUT THE EMBEDDING itself, prefer the targeted tools instead:
+  - get_region_screenshot — a clean, cropped view of the embedding scatter (or a sub-region of it).
+  - render_embedding_view — the embedding plus a structured legend JSON (colors → categories → counts).
+Answer quantitative questions from run_sql_query, not from this screenshot.`,
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -689,6 +719,9 @@ Other independent filter sources (the embedding brush, predicates the user added
         return imageResponse(image);
       },
     },
+    // Vision substrate — targeted embedding rendering. Lives in its own
+    // module (vision_tools.ts); registered here with a single line.
+    ...visionTools(delegate, screenshotOptions),
   ];
 
   api.provideContext({ tools: tools });
