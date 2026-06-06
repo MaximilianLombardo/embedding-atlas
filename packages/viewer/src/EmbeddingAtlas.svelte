@@ -962,6 +962,21 @@
         set columnStyles(x) {
           columnStyles = x;
         },
+        // Wiring for the `retrieve` content-retrieval tool. Getters so the
+        // tool reads the live searcher / predicate / column config at call
+        // time (these can change as the user loads data or edits filters).
+        retrieve: {
+          get searcher() {
+            return searcher;
+          },
+          coordinator,
+          table: data.table,
+          idColumn: data.id,
+          textColumn: data.text ?? null,
+          xColumn: data.projection?.x,
+          yColumn: data.projection?.y,
+          currentPredicate,
+        },
       });
 
       $effect(() => {

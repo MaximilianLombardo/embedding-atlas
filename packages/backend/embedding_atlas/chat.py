@@ -294,12 +294,25 @@ def _build_system_prompt(
         if id_column
         else ""
     )
+    # When a text column exists, the viewer also exposes a `retrieve` tool
+    # (hybrid semantic + lexical search). Point the model at it for
+    # content/meaning questions so it doesn't try to fake semantic search
+    # with LIKE clauses in run_sql_query.
+    retrieve_hint = (
+        " For content/meaning questions (\"what do these rows say about X\", "
+        '"find rows about Y") prefer the `retrieve` tool — it does hybrid '
+        "semantic + keyword search over the text column and returns cited "
+        "rows. Use `run_sql_query` for aggregates, counts, sorting, and "
+        "exact-column filters instead."
+        if text_column
+        else ""
+    )
     tool_hint = (
         "If the user asks about something the sample doesn't cover, call the "
         "`run_sql_query` tool to inspect more rows. Always scope queries to the "
         "selection by including the WHERE predicate (or by adding "
         "`WHERE <predicate>` if the user has selected something). Keep result "
-        "sets small." + citation_id_hint
+        "sets small." + retrieve_hint + citation_id_hint
         if has_sql_tool
         else ""
     )
