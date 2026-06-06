@@ -41,6 +41,12 @@ interface Metadata {
   chat?: {
     /** Path or URL of the chat endpoint relative to the server. */
     endpoint: string;
+    /**
+     * Path of the optional prompt-refinement endpoint. Advertised by the
+     * backend alongside `endpoint`; the chat composer also derives it from
+     * `endpoint` (`…/chat` → `…/chat/refine`) so this is informational.
+     */
+    refineEndpoint?: string;
   };
 }
 

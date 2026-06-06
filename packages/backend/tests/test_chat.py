@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
+import asyncio
 import json
 
 import duckdb
@@ -7,11 +8,13 @@ import pytest
 
 from embedding_atlas.chat import (
     CITED_ROWS_CAP,
+    _build_refine_system_prompt,
     _build_system_prompt,
     _extract_cited_rows,
     _guard_select,
     _looks_safe_predicate,
     _run_sql_tool,
+    refine_prompt,
 )
 
 
@@ -294,4 +297,74 @@ def test_predicate_guard_accepts_simple():
 def test_predicate_guard_rejects_semicolon_and_comments():
     assert not _looks_safe_predicate("1=1; DROP TABLE dataset")
     assert not _looks_safe_predicate("1=1 -- comment")
+
+
+# ─── optional prompt refinement ────────────────────────────────────────────
+
+
+def test_refine_prompt_injects_selection_and_capabilities():
+    prompt = _build_refine_system_prompt(
+        predicate="cluster = 3",
+        table="dataset",
+        text_column="abstract",
+        row_count=1240,
+        sample=[{"id": 1, "title": "T", "doi": "10.1/x", "abstract": "a"}],
+    )
+    # Rewriter framing, not analyst framing.
+    assert "rewrite" in prompt.lower()
+    assert "Output ONLY the rewritten prompt" in prompt
+    # Context injection: schema, selection + count, capability + domain surface.
+    assert "`dataset`" in prompt
+    assert "cluster = 3" in prompt
+    assert "1240 rows" in prompt
+    assert "retrieve" in prompt  # text column → retrieve capability mentioned
+    assert "scholarly/paper-shaped" in prompt  # doi → domain hint
+    # Deixis resolution against the live selection.
+    assert "these" in prompt.lower()
+
+
+def test_refine_prompt_no_selection_branch():
+    prompt = _build_refine_system_prompt(
+        predicate=None,
+        table="dataset",
+        text_column=None,
+        row_count=None,
+        sample=[],
+    )
+    assert "no selection is active" in prompt
+    # No text column → retrieve capability is omitted.
+    assert "retrieve" not in prompt
+    # Deixis guidance still present for the no-selection case.
+    assert "lasso" in prompt.lower()
+
+
+def test_refine_prompt_empty_prompt_is_noop():
+    result = asyncio.run(
+        refine_prompt(
+            {"prompt": "   ", "context": {}},
+            duckdb_connection=None,
+            table="dataset",
+        )
+    )
+    assert result["refined_applied"] is False
+    assert result["refined"] == ""
+    assert result["reason"] == "empty prompt"
+
+
+def test_refine_prompt_falls_back_without_api_key(monkeypatch):
+    # With no API key available, refine degrades to echoing the original prompt
+    # so the composer can just send what the user typed.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_KEY", raising=False)
+    result = asyncio.run(
+        refine_prompt(
+            {"prompt": "summarize these", "context": {"predicate": "cluster = 3"}},
+            duckdb_connection=None,
+            table="dataset",
+        )
+    )
+    assert result["refined_applied"] is False
+    assert result["refined"] == "summarize these"
+    assert result["original"] == "summarize these"
+    assert "no API key" in (result["reason"] or "")
     assert not _looks_safe_predicate("1=1 /* comment */")
