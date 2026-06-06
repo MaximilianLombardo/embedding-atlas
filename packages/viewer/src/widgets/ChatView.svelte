@@ -6,6 +6,7 @@
   import InlineChartView from "./InlineChartView.svelte";
   import Spinner from "./Spinner.svelte";
   import { sanitizeHTML } from "../utils/sanitize.js";
+  import { summarizeToolCall } from "../utils/tool_summary.js";
 
   import type { ChartContext, RowID } from "../charts/chart.js";
   import {
@@ -423,6 +424,18 @@
   }
 
   /**
+   * Split a tool-summary string (from `tool_summary.ts`) into alternating
+   * plain / inline-code segments on its backtick fences. The summary embeds
+   * model/user-derived fragments (SQL, predicates, column names) in
+   * `` `backticks` ``; rendering them as Svelte-templated <code> spans (rather
+   * than {@html}) keeps those fragments inert — no HTML injection — while still
+   * giving them the monospace styling the rest of the chat uses.
+   */
+  function summarySegments(summary: string): Array<{ code: boolean; text: string }> {
+    return summary.split("`").map((text, i) => ({ code: i % 2 === 1, text }));
+  }
+
+  /**
    * Aggregate citations across every tool call in this assistant turn,
    * de-duplicated, preserving first-seen order. Used to render a single
    * "Sources:" pill row at the end of the turn rather than one per tool.
@@ -501,17 +514,34 @@
           {:else}
             <div class="flex flex-col gap-2">
               {#each turn.tools as tool (tool.id)}
+                <!-- Tool-call step card (Tier-1). The summary describes the
+                   *viewer effect* (via tool_summary.ts), not the raw MCP
+                   payload. Collapsed by default for successful calls; an
+                   errored call defaults open (`open={tool.isError}`) so the
+                   failure detail is visible without a click. The raw input
+                   JSON + result still live in the drawer below. -->
+                {@const pendingTool = tool.result === undefined}
+                {@const summary = summarizeToolCall({ name: tool.name, input: tool.input, result: tool.result })}
                 <details
-                  class="rounded-md border text-xs"
+                  class="chat-tool-card rounded-md border text-xs"
                   class:border-slate-300={!tool.isError}
                   class:dark:border-slate-700={!tool.isError}
                   class:border-red-400={tool.isError}
+                  open={tool.isError}
                 >
                   <summary class="px-2 py-1 cursor-pointer select-none text-slate-600 dark:text-slate-300">
-                    {tool.isError ? "⚠" : "⚙"} <span class="font-mono">{tool.name}</span>
-                    {#if tool.result === undefined}
-                      <span class="text-slate-400">…</span>
+                    {#if pendingTool}
+                      <span class="chat-tool-status chat-tool-status-running" aria-label="Running" title="Running"
+                      ></span>
+                    {:else if tool.isError}
+                      <span class="chat-tool-status chat-tool-status-error" aria-hidden="true">⚠</span>
+                    {:else}
+                      <span class="chat-tool-status chat-tool-status-done" aria-hidden="true">✓</span>
                     {/if}
+                    <span class="chat-tool-summary"
+                      >{#each summarySegments(summary) as seg, si (si)}{#if seg.code}<code>{seg.text}</code
+                          >{:else}{seg.text}{/if}{/each}</span
+                    >
                   </summary>
                   <div class="px-2 py-1 border-t border-slate-200 dark:border-slate-700 space-y-1">
                     <pre
@@ -682,6 +712,56 @@
 </div>
 
 <style>
+  /* Tool-call step card status indicator. A small leading glyph/dot shows
+     running → done → error; the summary text (from tool_summary.ts) sits
+     beside it. Kept inline so the card header stays one line. */
+  .chat-tool-status {
+    display: inline-block;
+    width: 1em;
+    text-align: center;
+    margin-right: 0.15rem;
+  }
+  .chat-tool-status-done {
+    color: rgb(22 163 74); /* green-600 */
+  }
+  .chat-tool-status-error {
+    color: rgb(220 38 38); /* red-600 */
+  }
+  /* Running: a small pulsing dot rendered via the empty span's box. */
+  .chat-tool-status-running {
+    width: 0.5em;
+    height: 0.5em;
+    border-radius: 9999px;
+    background: rgb(100 116 139); /* slate-500 */
+    vertical-align: middle;
+    animation: chat-tool-pulse 1s ease-in-out infinite;
+  }
+  @keyframes chat-tool-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-tool-status-running {
+      animation: none;
+    }
+  }
+  .chat-tool-summary {
+    color: rgb(51 65 85); /* slate-700 */
+  }
+  :global(.dark) .chat-tool-summary {
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  /* Inline `code` spans the summary uses for SQL / predicate fragments. */
+  .chat-tool-summary code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+
   /* Cap the turn-level screenshot (A4) at a sane size; the button wrapping
      the image opens the full-resolution data URL in a new tab on click
      (simpler than a lightbox). */
