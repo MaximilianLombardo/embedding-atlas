@@ -1,6 +1,7 @@
 # Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,10 @@ from .embedding import create_embedder
 from .utils import logger
 
 DEFAULT_MAX_CONCURRENCY = 8
+
+# Version of the embedding-stamp schema written into dataset metadata. Bump
+# when the structure of the stamp (see ``_build_embedding_stamp``) changes.
+EMBEDDING_STAMP_VERSION = 1
 
 
 def compute_projection(
@@ -32,6 +37,9 @@ def compute_projection(
     embedder_args: dict | None = None,
     umap_args: dict | None = None,
     cache_root: str | Path | None = None,
+    keep_embedding: bool = False,
+    embedding: str = "embedding",
+    stamp_out: dict | None = None,
 ) -> IntoDataFrameT:
     """
     Compute embeddings and generate 2D projections for a DataFrame column.
@@ -69,6 +77,19 @@ def compute_projection(
         embedder_args: dict, embedder-specific arguments (e.g., api_key, api_base).
         umap_args: dict, arguments for the UMAP algorithm.
         cache_root: str or Path or None, root directory for caching results.
+        keep_embedding: bool, when True the high-dimensional embedding used for
+            UMAP is retained as a fixed-width ``FLOAT[N]`` (32-bit) array column
+            in the output (suitable for DuckDB ``array_cosine_distance``). When
+            False (default) the embedding is discarded after projection, matching
+            historical output size.
+        embedding: str, column name for the retained embedding (only used when
+            ``keep_embedding`` is True). A non-colliding name is the caller's
+            responsibility.
+        stamp_out: dict or None, an optional mutable dict that, if provided, is
+            populated with the embedding-model stamp describing the embedding
+            space (model id, output dimensions, normalization, version/hash, and
+            the retained column name + dim when ``keep_embedding`` is True). See
+            ``_build_embedding_stamp`` for the schema.
 
     Returns:
         A new DataFrame (same type as input) with projection columns added.
@@ -88,6 +109,9 @@ def compute_projection(
             embedder_args=embedder_args,
             umap_args=umap_args,
             cache_root=cache_root,
+            keep_embedding=keep_embedding,
+            embedding=embedding,
+            stamp_out=stamp_out,
         )
     )
 
@@ -107,6 +131,9 @@ async def async_compute_projection(
     embedder_args: dict | None = None,
     umap_args: dict | None = None,
     cache_root: str | Path | None = None,
+    keep_embedding: bool = False,
+    embedding: str = "embedding",
+    stamp_out: dict | None = None,
 ) -> IntoDataFrameT:
     """
     Async version of ``compute_projection``.
@@ -228,6 +255,38 @@ async def async_compute_projection(
                 backend=backend,
             )
         )
+
+    embedding_column: str | None = None
+    if keep_embedding and proj.embedding is not None:
+        embedding_column = embedding
+        # Store as a fixed-width FLOAT[N] (32-bit) array column. Casting to a
+        # fixed-size Array (vs. List) makes the column directly usable with
+        # DuckDB's array_cosine_distance for vector RAG over the original space.
+        emb32 = np.asarray(proj.embedding, dtype=np.float32)
+        dim = emb32.shape[1] if emb32.ndim == 2 else 0
+        new_columns.append(
+            nw.new_series(
+                embedding_column,
+                emb32.tolist(),
+                nw.Array(nw.Float32, dim),
+                backend=backend,
+            )
+        )
+
+    # Stamp the embedding-model identity into the caller-provided dict so it can
+    # be persisted into dataset metadata for parity checks / vector RAG.
+    if stamp_out is not None and proj.embedding is not None:
+        stamp_out.update(
+            _build_embedding_stamp(
+                proj.embedding,
+                modality=modality,
+                embedder_name=embedder_name,
+                model=model,
+                embedder_args=embedder_args,
+                embedding_column=embedding_column,
+            )
+        )
+
     return nw.to_native(nw_frame.with_columns(new_columns))
 
 
@@ -335,20 +394,27 @@ def _to_canonical_vector(series: nw.Series) -> list[np.ndarray]:
 
 @dataclass
 class Projection:
-    # Array with shape (N, embedding_dim), the high-dimensional embedding
+    # Array with shape (N, 2), the 2D UMAP projection coordinates.
     projection: np.ndarray
 
     knn_indices: np.ndarray
     knn_distances: np.ndarray
 
+    # Array with shape (N, embedding_dim), the high-dimensional embedding fed to
+    # UMAP. Retained so it can be persisted for vector RAG over the original
+    # embedding space. May be None on values produced before this field existed.
+    embedding: np.ndarray | None = None
+
     @staticmethod
     def serialize(value: "Projection", fd: IO[bytes]) -> None:
-        np.savez(
-            fd,
-            projection=value.projection,
-            knn_indices=value.knn_indices,
-            knn_distances=value.knn_distances,
-        )
+        arrays = {
+            "projection": value.projection,
+            "knn_indices": value.knn_indices,
+            "knn_distances": value.knn_distances,
+        }
+        if value.embedding is not None:
+            arrays["embedding"] = value.embedding
+        np.savez(fd, **arrays)
 
     @staticmethod
     def deserialize(fd: IO[bytes]) -> "Projection":
@@ -357,7 +423,83 @@ class Projection:
             projection=d["projection"],
             knn_indices=d["knn_indices"],
             knn_distances=d["knn_distances"],
+            embedding=d["embedding"] if "embedding" in d.files else None,
         )
+
+
+def _build_embedding_stamp(
+    embedding: np.ndarray,
+    *,
+    modality: str,
+    embedder_name: str | None,
+    model: str | None,
+    embedder_args: dict,
+    embedding_column: str | None,
+) -> dict:
+    """Build the embedding-model stamp recorded in dataset metadata.
+
+    The stamp identifies the embedding space so the query side can verify
+    parity before doing vector retrieval over the corpus. Fields:
+
+    - ``version``: int, schema version of the stamp itself.
+    - ``modality``: str, the embedded modality (text/image/audio/vector).
+    - ``embedder``: str | None, the backend used (e.g. ``sentence-transformers``,
+      ``transformers``, ``litellm``, a custom callable name, or None for the
+      ``vector`` modality where embeddings are supplied directly).
+    - ``model``: str | None, the resolved model name when known.
+    - ``dimensions``: int, the output dimensionality N of the embedding.
+    - ``normalization``: str, ``"l2"`` when row vectors are unit-norm (within
+      tolerance), otherwise ``"none"``.
+    - ``hash``: str, short content hash over the identifying fields, usable as a
+      cheap parity/version key.
+    - ``column`` / ``columnDim``: present only when the embedding column is
+      retained in the dataset; the column name and its fixed width N.
+    """
+    dim = int(embedding.shape[1]) if embedding.ndim == 2 else 0
+
+    normalization = "none"
+    if dim > 0 and embedding.shape[0] > 0:
+        norms = np.linalg.norm(embedding.astype(np.float64), axis=1)
+        nonzero = norms[norms > 0]
+        if len(nonzero) > 0 and np.allclose(nonzero, 1.0, atol=1e-3):
+            normalization = "l2"
+
+    stamp: dict = {
+        "version": EMBEDDING_STAMP_VERSION,
+        "modality": modality,
+        "embedder": embedder_name,
+        "model": model,
+        "dimensions": dim,
+        "normalization": normalization,
+    }
+
+    # A short, stable hash over the identifying fields. Excludes secrets (the
+    # caching-safe view of embedder_args already strips api_key/api_base).
+    identity = json_like_repr(
+        {
+            "version": EMBEDDING_STAMP_VERSION,
+            "modality": modality,
+            "embedder": embedder_name,
+            "model": model,
+            "dimensions": dim,
+            "normalization": normalization,
+            "embedder_args": _caching_embedder_args(embedder_args),
+        }
+    )
+    stamp["hash"] = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+    if embedding_column is not None:
+        stamp["column"] = embedding_column
+        stamp["columnDim"] = dim
+
+    return stamp
+
+
+def json_like_repr(value) -> str:
+    """Deterministic string repr for hashing (sorted keys, stable ordering)."""
+    import json
+
+    return json.dumps(value, sort_keys=True, default=str)
 
 
 def _run_umap(
@@ -389,7 +531,12 @@ def _run_umap(
     proj = umap.UMAP(**kwargs, precomputed_knn=knn, metric=metric)
     result: np.ndarray = proj.fit_transform(hidden_vectors)  # type: ignore
 
-    return Projection(projection=result, knn_indices=knn[0], knn_distances=knn[1])
+    return Projection(
+        projection=result,
+        knn_indices=knn[0],
+        knn_distances=knn[1],
+        embedding=np.asarray(hidden_vectors, dtype=np.float32),
+    )
 
 
 async def _run_embedding(
