@@ -16,6 +16,7 @@ import {
 } from "../schemas.js";
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
+import { validateChartSpec } from "./chart_spec_guard.js";
 
 /** Default name used by apply_filter when the model omits the `name` parameter. */
 const DEFAULT_FILTER_NAME = "Chat Filter";
@@ -245,6 +246,12 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
         additionalProperties: false,
       },
       execute: async (params: { spec: any }) => {
+        // Security gate: reject unknown chart types, prototype-pollution keys,
+        // and non-read-only embedded SQL before the schema (shape) check.
+        const guard = validateChartSpec(params.spec);
+        if (!guard.ok) {
+          return jsonResponse({ error: "Spec rejected", details: guard.error });
+        }
         // Validate schema.
         let validateResult = validate(params.spec, schemaBuiltinChartSpec);
         if (validateResult.valid) {
@@ -301,6 +308,15 @@ Notes:
         additionalProperties: false,
       },
       execute: async (params: { spec: any }) => {
+        // Security gate: reject unknown chart types, prototype-pollution keys,
+        // and non-read-only embedded SQL before shape validation / rendering.
+        const guard = validateChartSpec(params.spec);
+        if (!guard.ok) {
+          return jsonResponse({
+            error: "Spec rejected; no chart was rendered.",
+            details: guard.error,
+          });
+        }
         const validateResult = validate(params.spec, schemaBuiltinChartSpec);
         if (!validateResult.valid) {
           return jsonResponse({

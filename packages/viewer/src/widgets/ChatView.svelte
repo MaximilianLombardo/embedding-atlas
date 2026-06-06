@@ -1,11 +1,11 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  import DOMPurify from "dompurify";
   import { marked } from "marked";
   import { tick } from "svelte";
 
   import InlineChartView from "./InlineChartView.svelte";
   import Spinner from "./Spinner.svelte";
+  import { sanitizeHTML } from "../utils/sanitize.js";
 
   import type { ChartContext, RowID } from "../charts/chart.js";
   import {
@@ -76,10 +76,14 @@
 
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
-    const clean = DOMPurify.sanitize(raw);
-    // Inject a copy button into each code block (A6). Done *after* sanitize
-    // so the trusted button markup isn't stripped; a delegated click handler
-    // on the prose container (`onProseClick`) performs the actual copy.
+    // Route through the shared sanitizer so the http/https/mailto URL-scheme
+    // allowlist applies here too (neutralizes javascript:/data: links and
+    // data-exfil image URLs that a model reply could contain).
+    const clean = sanitizeHTML(raw);
+    // Inject a copy button into each code block (A6). Done *after* sanitize,
+    // but the injected markup is a fixed trusted constant containing no model
+    // or user content, so it cannot reintroduce unsanitized HTML. A delegated
+    // click handler on the prose container (`onProseClick`) performs the copy.
     return clean.replaceAll(
       "<pre>",
       '<pre><button class="copy-code-btn" type="button" aria-label="Copy code" title="Copy code">Copy</button>',
