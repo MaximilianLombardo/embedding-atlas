@@ -958,6 +958,215 @@ ChatMode = Literal["direct", "agent"]
 # ideas/mcp-llm-readiness.md for the rationale. Override via --chat-model.
 DEFAULT_CHAT_MODEL = "claude-opus-4-7"
 
+# ─── optional prompt refinement (Tier-2) ───────────────────────────────────
+#
+# A user-toggleable "refine" control in the composer rewrites a terse typed
+# prompt into a well-specified one *before* it's sent to the agent, using the
+# same EA context the chat path already has (schema/columns, the current
+# predicate + row count, the capability surface, dataset domain). It resolves
+# deixis ("these"/"this cluster") against the live selection. This is a single
+# cheap, non-streaming completion against a FAST model — never tool-using, so
+# it can't mutate the viewer — and falls back to the original prompt whenever
+# no API key / SDK is available.
+
+# Always-fast model for refinement regardless of the (possibly Opus) chat
+# model: refinement is latency-sensitive and disposable, so we never spend Opus
+# on it. Kept independent of DEFAULT_CHAT_MODEL on purpose.
+REFINE_MODEL = "claude-haiku-4-5"
+# A refined prompt should stay a prompt, not become an essay. Caps the
+# completion so a runaway model can't balloon the composer.
+REFINE_MAX_TOKENS = 600
+
+
+def _build_refine_system_prompt(
+    predicate: str | None,
+    table: str,
+    text_column: str | None,
+    row_count: int | None,
+    sample: list[dict[str, Any]],
+) -> str:
+    """System prompt for the refine path.
+
+    Mirrors the context injected by ``_build_system_prompt`` (schema, current
+    selection + row count, capability surface, citation columns, dataset
+    domain) but instructs the model to act as a *prompt rewriter* rather than
+    an analyst: it returns only the improved prompt text, never an answer and
+    never a tool call.
+    """
+    selection_clause = f"WHERE {predicate}" if predicate else "no selection is active"
+    count_clause = (
+        f"{row_count} rows currently match the selection."
+        if row_count is not None
+        else "The selected row count is unknown."
+    )
+    columns = sample[0].keys() if sample else []
+    visible_columns = ", ".join(f"`{c}`" for c in columns)
+    schema_hint = (
+        f"The DuckDB table is `{table}`; visible columns: {visible_columns}."
+        if visible_columns
+        else f"The DuckDB table is `{table}`."
+    )
+    text_hint = (
+        f"The primary text column is `{text_column}`."
+        if text_column
+        else "There is no designated text column."
+    )
+    # Domain hint: scholarly datasets get a nudge to ask for paper-title
+    # citations, matching what the chat path will actually be told to do.
+    citation_cols = {c.lower() for c in columns if c.lower() in CITATION_KEYS}
+    domain_hint = (
+        " This is a scholarly/paper-shaped dataset (citation columns: "
+        + ", ".join(sorted(f"`{c}`" for c in citation_cols))
+        + "); a good refined prompt asks the agent to cite specific papers "
+        "by title when it makes a paper-grounded claim."
+        if citation_cols
+        else ""
+    )
+    retrieve_clause = (
+        " (and `retrieve`, hybrid semantic + keyword search over the text "
+        "column)"
+        if text_column
+        else ""
+    )
+    capability_hint = (
+        "The agent the refined prompt is sent to is a selection-aware data "
+        "copilot AND viewer automation agent. It can: run read-only SQL over "
+        f"the table{retrieve_clause}, apply/clear filters through a visible "
+        "Predicates panel, add/recolor/respec charts, switch the layout, "
+        "render inline cross-filter-aware charts, and take screenshots."
+    )
+    deixis_hint = (
+        "Resolve deictic references in the user's prompt against the current "
+        "selection: 'these' / 'this cluster' / 'the selected rows' / 'here' "
+        f"mean the {row_count if row_count is not None else 'currently selected'} "
+        f"rows matching `{predicate}`. Make that concrete in the rewrite (e.g. "
+        f'"the {row_count} selected rows ({predicate})").'
+        if predicate
+        else "If the user uses deixis ('these', 'this cluster') but no "
+        "selection is active, ask them — in the rewritten prompt — to lasso a "
+        "region first, or rewrite the prompt to operate over the whole dataset "
+        "if that's the clear intent."
+    )
+    return (
+        "You rewrite a user's rough, terse prompt to an AI data-analysis agent "
+        "into a single clearer, more specific prompt, using the context below. "
+        "You are NOT the agent: do not answer the question, do not call tools, "
+        "do not run SQL. Output ONLY the rewritten prompt — no preamble, no "
+        "explanation, no quotes, no markdown fences.\n\n"
+        "Keep the user's original intent and scope; never invent new tasks, "
+        "columns, or constraints the user didn't imply. Make implicit scope "
+        "explicit, name the relevant columns, and spell out the expected "
+        "output shape (a number, a list, a chart, a filter) when the user's "
+        "wording makes it clear. Prefer one or two tight sentences; if the "
+        "prompt is already specific, return it essentially unchanged.\n\n"
+        f"{schema_hint}\n"
+        f"{text_hint}\n"
+        f"Current selection: {selection_clause}. {count_clause}\n\n"
+        f"{capability_hint}{domain_hint}\n\n"
+        f"{deixis_hint}"
+    )
+
+
+async def refine_prompt(
+    body: dict[str, Any],
+    *,
+    duckdb_connection: duckdb.DuckDBPyConnection | None,
+    table: str,
+    model: str = REFINE_MODEL,
+) -> dict[str, Any]:
+    """Rewrite a terse user prompt into a well-specified one using EA context.
+
+    Cheap, non-streaming, single completion against a fast model. Reuses the
+    same selection sampling + API-key handling as ``stream_chat``. Returns a
+    JSON-serializable dict:
+
+      {
+        "original": <str>,         # the prompt as typed
+        "refined": <str>,          # the rewritten prompt (== original on fallback)
+        "refined_applied": <bool>, # True iff a model actually rewrote it
+        "reason": <str | None>,    # why we fell back, when we did
+      }
+
+    Never raises for the no-key / no-SDK / model-error cases — it degrades to
+    returning the original prompt so the composer can always fall back to
+    sending what the user typed. The frontend treats ``refined_applied=False``
+    as "just send the original".
+    """
+    prompt = (body.get("prompt") or "").strip()
+    context = body.get("context") or {}
+    predicate = context.get("predicate")
+    text_column = context.get("text_column")
+
+    if not prompt:
+        return {
+            "original": prompt,
+            "refined": prompt,
+            "refined_applied": False,
+            "reason": "empty prompt",
+        }
+
+    if not _direct_available():
+        # No anthropic SDK or no API key — mirror the echo fallback by handing
+        # the original prompt straight back so the composer just sends it.
+        return {
+            "original": prompt,
+            "refined": prompt,
+            "refined_applied": False,
+            "reason": "no API key / anthropic SDK",
+        }
+
+    sample: list[dict[str, Any]] = []
+    row_count: int | None = None
+    if duckdb_connection is not None:
+        sample = _sample_rows(duckdb_connection, table, predicate)
+        row_count = _row_count(duckdb_connection, table, predicate)
+
+    system_prompt = _build_refine_system_prompt(
+        predicate=predicate,
+        table=table,
+        text_column=text_column,
+        row_count=row_count,
+        sample=sample,
+    )
+
+    try:
+        from anthropic import AsyncAnthropic
+
+        client = AsyncAnthropic()
+        message = await client.messages.create(
+            model=model,
+            max_tokens=REFINE_MAX_TOKENS,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        refined = "".join(
+            block.text
+            for block in message.content
+            if getattr(block, "type", None) == "text"
+        ).strip()
+    except Exception as exc:
+        return {
+            "original": prompt,
+            "refined": prompt,
+            "refined_applied": False,
+            "reason": f"refine call failed: {exc}",
+        }
+
+    if not refined:
+        return {
+            "original": prompt,
+            "refined": prompt,
+            "refined_applied": False,
+            "reason": "model returned empty text",
+        }
+
+    return {
+        "original": prompt,
+        "refined": refined,
+        "refined_applied": refined != prompt,
+        "reason": None,
+    }
+
 
 async def stream_chat(
     body: dict[str, Any],

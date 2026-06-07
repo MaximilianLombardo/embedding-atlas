@@ -5,10 +5,13 @@
 
   import InlineChartView from "./InlineChartView.svelte";
   import Spinner from "./Spinner.svelte";
+  import IconSparkle from "~icons/fluent/sparkle-16-filled";
   import { sanitizeHTML } from "../utils/sanitize.js";
+  import { summarizeToolCall } from "../utils/tool_summary.js";
 
   import type { ChartContext, RowID } from "../charts/chart.js";
   import {
+    refinePrompt,
     streamChat,
     type ChatCitation,
     type ChatContentBlock,
@@ -73,6 +76,22 @@
   // svelte-ignore state_referenced_locally
   let draft = $state(initialPrompt ?? "");
   let scroller: HTMLDivElement | undefined;
+
+  // ── Optional prompt refinement (Tier-2) ──────────────────────────────────
+  // An ON-DEMAND "refine" action in the composer — NOT a mode. Enter always
+  // sends the draft as-is; refinement never gates sending. Clicking ✨ Refine
+  // rewrites the current draft into a well-specified prompt using EA context
+  // (via the backend refine path) and shows it editable for accept / tweak /
+  // revert before the user sends. Opt-in per message; always bypassable.
+  // True while a refine request is in flight (between click and preview).
+  let refining = $state(false);
+  // When set, the editable refined-prompt preview is shown. Holds both the
+  // rewritten text (editable) and the original so "revert" can restore it.
+  let refinePreview: { original: string; refined: string } | null = $state(null);
+
+  /** Derive the refine endpoint from the chat endpoint (`…/chat` →
+   *  `…/chat/refine`). Returns null when chat isn't configured. */
+  let refineEndpoint = $derived(endpoint ? endpoint.replace(/\/chat$/, "/chat/refine") : null);
 
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
@@ -271,6 +290,68 @@
       .map((t) => ({ role: t.role, content: t.text }));
   }
 
+  /**
+   * Entry point for the send button / Enter key. When the refine toggle is ON
+   * and a refine endpoint is available, route the rough prompt through the
+   * backend refine path first and surface an editable preview; otherwise send
+   * immediately. Graceful: if refine fails or returns no change, fall through
+   * to sending the original prompt.
+   */
+  async function onSend() {
+    if (!endpoint || pending || refining) return;
+    const prompt = draft.trim();
+    if (!prompt) return;
+    // Enter always sends as-is — refinement is opt-in via the ✨ button only.
+    await send();
+  }
+
+  /** Refine the current draft on demand (✨ button). Opens the editable preview
+   *  when the model returns a usable rewrite; on a no-op or failure it leaves
+   *  the draft untouched so the user can send or edit it directly. Never sends
+   *  on its own — sending stays an explicit user action. */
+  async function beginRefine(prompt: string) {
+    if (!prompt || !refineEndpoint || pending || refining) return;
+    refining = true;
+    try {
+      const result = await refinePrompt(refineEndpoint, { prompt, context });
+      if (result.refined_applied && result.refined.trim() && result.refined.trim() !== prompt) {
+        refinePreview = { original: prompt, refined: result.refined.trim() };
+        await tick();
+        refineInputEl?.focus();
+      }
+    } catch {
+      // refinePrompt already swallows network errors, but guard anyway. Leave
+      // the draft as-is for the user to send/edit.
+    } finally {
+      refining = false;
+    }
+  }
+
+  /** Accept the (possibly user-edited) refined prompt and send it. */
+  function acceptRefine() {
+    if (!refinePreview) return;
+    const text = refinePreview.refined.trim();
+    refinePreview = null;
+    if (!text) return;
+    draft = text;
+    void send();
+  }
+
+  /** Restore the refined preview text to the original rough prompt. */
+  function revertRefine() {
+    if (!refinePreview) return;
+    refinePreview = { ...refinePreview, refined: refinePreview.original };
+    refineInputEl?.focus();
+  }
+
+  /** Discard the preview without sending; restore the draft so the user can
+   *  edit and retry. */
+  function cancelRefine() {
+    if (!refinePreview) return;
+    draft = refinePreview.original;
+    refinePreview = null;
+  }
+
   async function send() {
     if (!endpoint) return;
     const prompt = draft.trim();
@@ -423,6 +504,18 @@
   }
 
   /**
+   * Split a tool-summary string (from `tool_summary.ts`) into alternating
+   * plain / inline-code segments on its backtick fences. The summary embeds
+   * model/user-derived fragments (SQL, predicates, column names) in
+   * `` `backticks` ``; rendering them as Svelte-templated <code> spans (rather
+   * than {@html}) keeps those fragments inert — no HTML injection — while still
+   * giving them the monospace styling the rest of the chat uses.
+   */
+  function summarySegments(summary: string): Array<{ code: boolean; text: string }> {
+    return summary.split("`").map((text, i) => ({ code: i % 2 === 1, text }));
+  }
+
+  /**
    * Aggregate citations across every tool call in this assistant turn,
    * de-duplicated, preserving first-seen order. Used to render a single
    * "Sources:" pill row at the end of the turn rather than one per tool.
@@ -465,11 +558,25 @@
     e.stopPropagation();
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      onSend();
+    }
+  }
+
+  /** Keydown handler for the refined-prompt preview editor: Enter accepts +
+   *  sends, Escape cancels back to the draft, Shift+Enter inserts a newline. */
+  function onRefineKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      acceptRefine();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelRefine();
     }
   }
 
   let textareaEl: HTMLTextAreaElement | undefined = $state();
+  let refineInputEl: HTMLTextAreaElement | undefined = $state();
 
   // Pull focus from cmdk's autofocused filter input down to the chat textarea
   // once the endpoint is known.
@@ -501,17 +608,34 @@
           {:else}
             <div class="flex flex-col gap-2">
               {#each turn.tools as tool (tool.id)}
+                <!-- Tool-call step card (Tier-1). The summary describes the
+                   *viewer effect* (via tool_summary.ts), not the raw MCP
+                   payload. Collapsed by default for successful calls; an
+                   errored call defaults open (`open={tool.isError}`) so the
+                   failure detail is visible without a click. The raw input
+                   JSON + result still live in the drawer below. -->
+                {@const pendingTool = tool.result === undefined}
+                {@const summary = summarizeToolCall({ name: tool.name, input: tool.input, result: tool.result })}
                 <details
-                  class="rounded-md border text-xs"
+                  class="chat-tool-card rounded-md border text-xs"
                   class:border-slate-300={!tool.isError}
                   class:dark:border-slate-700={!tool.isError}
                   class:border-red-400={tool.isError}
+                  open={tool.isError}
                 >
                   <summary class="px-2 py-1 cursor-pointer select-none text-slate-600 dark:text-slate-300">
-                    {tool.isError ? "⚠" : "⚙"} <span class="font-mono">{tool.name}</span>
-                    {#if tool.result === undefined}
-                      <span class="text-slate-400">…</span>
+                    {#if pendingTool}
+                      <span class="chat-tool-status chat-tool-status-running" aria-label="Running" title="Running"
+                      ></span>
+                    {:else if tool.isError}
+                      <span class="chat-tool-status chat-tool-status-error" aria-hidden="true">⚠</span>
+                    {:else}
+                      <span class="chat-tool-status chat-tool-status-done" aria-hidden="true">✓</span>
                     {/if}
+                    <span class="chat-tool-summary"
+                      >{#each summarySegments(summary) as seg, si (si)}{#if seg.code}<code>{seg.text}</code
+                          >{:else}{seg.text}{/if}{/each}</span
+                    >
                   </summary>
                   <div class="px-2 py-1 border-t border-slate-200 dark:border-slate-700 space-y-1">
                     <pre
@@ -662,6 +786,44 @@
         Chat backend not configured. Pass <code>chatEndpoint</code> to <code>EmbeddingAtlas</code>
         or run the dev server with <code>--chat</code>.
       </div>
+    {:else if refinePreview}
+      <!-- Editable refined-prompt preview (Tier-2): the rewritten prompt is
+         shown before send so the user can accept / tweak / revert / cancel. -->
+      <div class="chat-refine-preview">
+        <div class="chat-refine-label">
+          <span aria-hidden="true">✨</span>
+          <span>Refined prompt — edit, then send (Esc to cancel)</span>
+        </div>
+        <textarea
+          bind:this={refineInputEl}
+          bind:value={refinePreview.refined}
+          onkeydown={onRefineKeydown}
+          rows="3"
+          class="chat-refine-textarea"
+        ></textarea>
+        <div class="chat-refine-actions">
+          <button
+            type="button"
+            class="chat-refine-btn chat-refine-send"
+            onclick={acceptRefine}
+            title="Send the refined prompt"
+          >
+            Send refined
+          </button>
+          <button
+            type="button"
+            class="chat-refine-btn"
+            onclick={revertRefine}
+            disabled={refinePreview.refined === refinePreview.original}
+            title="Restore the original wording"
+          >
+            Revert
+          </button>
+          <button type="button" class="chat-refine-btn" onclick={cancelRefine} title="Discard and edit the original">
+            Cancel
+          </button>
+        </div>
+      </div>
     {:else}
       <textarea
         bind:this={textareaEl}
@@ -669,19 +831,86 @@
         onkeydown={onTextareaKeydown}
         placeholder="Ask Claude about the rows in scope… (Enter to send, Shift+Enter for newline)"
         rows="2"
-        disabled={pending}
+        disabled={pending || refining}
         class="w-full resize-none bg-transparent outline-none px-2 py-1 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 disabled:opacity-50"
       ></textarea>
-      {#if pending}
-        <div class="flex justify-end px-1 pt-1">
+      <div class="flex items-center justify-end gap-2 px-1 pt-1">
+        {#if refining}
+          <span class="chat-refine-status">Refining…</span>
+        {:else if pending}
           <button type="button" class="chat-stop-btn" onclick={stop} title="Stop generating"> ◼ Stop </button>
-        </div>
-      {/if}
+        {/if}
+        <!-- On-demand prompt refinement (✦ sparkle icon), icon-only, bottom-right.
+           Rewrites the current draft with EA context, then previews it; Enter
+           always sends as-is. Hidden when the backend has no refine endpoint. -->
+        {#if refineEndpoint}
+          <button
+            type="button"
+            class="chat-refine-toggle"
+            onclick={() => beginRefine(draft.trim())}
+            disabled={pending || refining || draft.trim().length === 0}
+            aria-label="Refine this prompt with dataset context"
+            title="Refine this prompt with dataset context, then review before sending (Enter sends as-is)"
+          >
+            <IconSparkle aria-hidden="true" />
+          </button>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
+  /* Tool-call step card status indicator. A small leading glyph/dot shows
+     running → done → error; the summary text (from tool_summary.ts) sits
+     beside it. Kept inline so the card header stays one line. */
+  .chat-tool-status {
+    display: inline-block;
+    width: 1em;
+    text-align: center;
+    margin-right: 0.15rem;
+  }
+  .chat-tool-status-done {
+    color: rgb(22 163 74); /* green-600 */
+  }
+  .chat-tool-status-error {
+    color: rgb(220 38 38); /* red-600 */
+  }
+  /* Running: a small pulsing dot rendered via the empty span's box. */
+  .chat-tool-status-running {
+    width: 0.5em;
+    height: 0.5em;
+    border-radius: 9999px;
+    background: rgb(100 116 139); /* slate-500 */
+    vertical-align: middle;
+    animation: chat-tool-pulse 1s ease-in-out infinite;
+  }
+  @keyframes chat-tool-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-tool-status-running {
+      animation: none;
+    }
+  }
+  .chat-tool-summary {
+    color: rgb(51 65 85); /* slate-700 */
+  }
+  :global(.dark) .chat-tool-summary {
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  /* Inline `code` spans the summary uses for SQL / predicate fragments. */
+  .chat-tool-summary code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+
   /* Cap the turn-level screenshot (A4) at a sane size; the button wrapping
      the image opens the full-resolution data URL in a new tab on click
      (simpler than a lightbox). */
@@ -874,5 +1103,152 @@
   :global(.dark) .chat-source-pill:hover:not(:disabled) {
     background: rgb(51 65 85); /* slate-700 */
     border-color: rgb(100 116 139); /* slate-500 */
+  }
+
+  /* Refine wand toggle in the composer (Tier-2). Active = filled accent. */
+  .chat-refine-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.85rem;
+    height: 1.85rem;
+    padding: 0;
+    border-radius: 9999px;
+    border: 1px solid rgb(196 181 253); /* violet-300 */
+    background: rgb(243 232 255); /* violet-100 */
+    color: rgb(124 58 237); /* violet-600 */
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+  /* The icon component renders its own <svg>, which sits outside this
+     component's scoped styles — reach it with :global() and size it. */
+  .chat-refine-toggle :global(svg) {
+    width: 1.05rem;
+    height: 1.05rem;
+  }
+  .chat-refine-toggle:hover:not(:disabled) {
+    background: rgb(221 214 254); /* violet-200 */
+    border-color: rgb(167 139 250); /* violet-400 */
+    color: rgb(109 40 217); /* violet-700 */
+  }
+  .chat-refine-toggle:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  :global(.dark) .chat-refine-toggle {
+    border-color: rgb(109 40 217); /* violet-700 */
+    background: rgb(76 29 149 / 0.35); /* violet-900 tint */
+    color: rgb(196 181 253); /* violet-300 */
+  }
+  :global(.dark) .chat-refine-toggle:hover:not(:disabled) {
+    background: rgb(91 33 182 / 0.5); /* violet-800 tint */
+    border-color: rgb(139 92 246); /* violet-500 */
+    color: rgb(221 214 254); /* violet-200 */
+  }
+
+  /* "Refining…" status text shown while the rewrite is in flight. */
+  .chat-refine-status {
+    font-size: 0.72rem;
+    color: rgb(124 58 237); /* violet-600 */
+  }
+  :global(.dark) .chat-refine-status {
+    color: rgb(167 139 250); /* violet-400 */
+  }
+
+  /* Editable refined-prompt preview block. */
+  .chat-refine-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.4rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgb(196 181 253); /* violet-300 */
+    background: rgb(245 243 255); /* violet-50 */
+  }
+  :global(.dark) .chat-refine-preview {
+    border-color: rgb(91 33 182); /* violet-800 */
+    background: rgb(46 16 101 / 0.35); /* violet-950-ish */
+  }
+  .chat-refine-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.7rem;
+    color: rgb(109 40 217); /* violet-700 */
+  }
+  :global(.dark) .chat-refine-label {
+    color: rgb(196 181 253); /* violet-300 */
+  }
+  .chat-refine-textarea {
+    width: 100%;
+    resize: none;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: rgb(255 255 255);
+    padding: 0.4rem 0.5rem;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    color: rgb(30 41 59); /* slate-800 */
+    outline: none;
+  }
+  .chat-refine-textarea:focus {
+    border-color: rgb(139 92 246); /* violet-500 */
+  }
+  :global(.dark) .chat-refine-textarea {
+    border-color: rgb(51 65 85); /* slate-700 */
+    background: rgb(15 23 42); /* slate-900 */
+    color: rgb(226 232 240); /* slate-200 */
+  }
+  .chat-refine-actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .chat-refine-btn {
+    padding: 0.125rem 0.6rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgb(203 213 225); /* slate-300 */
+    background: transparent;
+    color: rgb(71 85 105); /* slate-600 */
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
+  }
+  .chat-refine-btn:hover:not(:disabled) {
+    background: rgb(241 245 249); /* slate-100 */
+    border-color: rgb(148 163 184); /* slate-400 */
+  }
+  .chat-refine-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .chat-refine-send {
+    border-color: rgb(124 58 237); /* violet-600 */
+    background: rgb(124 58 237); /* violet-600 */
+    color: rgb(255 255 255);
+  }
+  .chat-refine-send:hover:not(:disabled) {
+    background: rgb(109 40 217); /* violet-700 */
+    border-color: rgb(109 40 217);
+  }
+  :global(.dark) .chat-refine-btn {
+    border-color: rgb(51 65 85); /* slate-700 */
+    color: rgb(203 213 225); /* slate-300 */
+  }
+  :global(.dark) .chat-refine-btn:hover:not(:disabled) {
+    background: rgb(30 41 59); /* slate-800 */
+  }
+  :global(.dark) .chat-refine-send {
+    border-color: rgb(139 92 246); /* violet-500 */
+    background: rgb(139 92 246);
+    color: rgb(255 255 255);
+  }
+  :global(.dark) .chat-refine-send:hover:not(:disabled) {
+    background: rgb(124 58 237); /* violet-600 */
   }
 </style>
