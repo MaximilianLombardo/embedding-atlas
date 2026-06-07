@@ -77,41 +77,20 @@
   let scroller: HTMLDivElement | undefined;
 
   // ── Optional prompt refinement (Tier-2) ──────────────────────────────────
-  // A user-toggleable "refine" wand in the composer. When ON, pressing send
-  // first rewrites the rough prompt into a well-specified one using EA context
-  // (via the backend refine path), then shows it editable for accept / tweak /
-  // revert / send before the accepted version is sent. State persists in
-  // localStorage so the preference survives reloads.
-  const REFINE_PREF_KEY = "embedding-atlas.chat.refine-enabled";
-  // svelte-ignore state_referenced_locally
-  let refineEnabled = $state(readRefinePref());
-  // True while the refine request is in flight (between send-click and preview).
+  // An ON-DEMAND "refine" action in the composer — NOT a mode. Enter always
+  // sends the draft as-is; refinement never gates sending. Clicking ✨ Refine
+  // rewrites the current draft into a well-specified prompt using EA context
+  // (via the backend refine path) and shows it editable for accept / tweak /
+  // revert before the user sends. Opt-in per message; always bypassable.
+  // True while a refine request is in flight (between click and preview).
   let refining = $state(false);
-  // When set, the editable refined-prompt preview is shown instead of sending
-  // immediately. Holds both the rewritten text (editable) and the original so
-  // "revert" can restore it.
+  // When set, the editable refined-prompt preview is shown. Holds both the
+  // rewritten text (editable) and the original so "revert" can restore it.
   let refinePreview: { original: string; refined: string } | null = $state(null);
 
   /** Derive the refine endpoint from the chat endpoint (`…/chat` →
    *  `…/chat/refine`). Returns null when chat isn't configured. */
   let refineEndpoint = $derived(endpoint ? endpoint.replace(/\/chat$/, "/chat/refine") : null);
-
-  function readRefinePref(): boolean {
-    try {
-      return localStorage.getItem(REFINE_PREF_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function toggleRefine() {
-    refineEnabled = !refineEnabled;
-    try {
-      localStorage.setItem(REFINE_PREF_KEY, refineEnabled ? "1" : "0");
-    } catch {
-      // Private mode / storage disabled — toggle still works for the session.
-    }
-  }
 
   function renderMarkdown(text: string): string {
     const raw = marked.parse(text, { async: false }) as string;
@@ -321,37 +300,30 @@
     if (!endpoint || pending || refining) return;
     const prompt = draft.trim();
     if (!prompt) return;
-    // A preview is open — Enter/Send accepts the currently-edited refined text.
-    if (refinePreview) {
-      acceptRefine();
-      return;
-    }
-    if (refineEnabled && refineEndpoint) {
-      await beginRefine(prompt);
-      return;
-    }
+    // Enter always sends as-is — refinement is opt-in via the ✨ button only.
     await send();
   }
 
-  /** Call the refine endpoint and open the editable preview. On failure or a
-   *  no-op rewrite, fall back to sending the original prompt directly. */
+  /** Refine the current draft on demand (✨ button). Opens the editable preview
+   *  when the model returns a usable rewrite; on a no-op or failure it leaves
+   *  the draft untouched so the user can send or edit it directly. Never sends
+   *  on its own — sending stays an explicit user action. */
   async function beginRefine(prompt: string) {
+    if (!prompt || !refineEndpoint || pending || refining) return;
     refining = true;
     try {
-      const result = await refinePrompt(refineEndpoint!, { prompt, context });
+      const result = await refinePrompt(refineEndpoint, { prompt, context });
       if (result.refined_applied && result.refined.trim() && result.refined.trim() !== prompt) {
         refinePreview = { original: prompt, refined: result.refined.trim() };
         await tick();
         refineInputEl?.focus();
-        return;
       }
     } catch {
-      // refinePrompt already swallows network errors, but guard anyway.
+      // refinePrompt already swallows network errors, but guard anyway. Leave
+      // the draft as-is for the user to send/edit.
     } finally {
       refining = false;
     }
-    // No usable rewrite — just send what the user typed.
-    await send();
   }
 
   /** Accept the (possibly user-edited) refined prompt and send it. */
@@ -869,13 +841,9 @@
           <button
             type="button"
             class="chat-refine-toggle"
-            class:active={refineEnabled}
-            aria-pressed={refineEnabled}
-            onclick={toggleRefine}
-            disabled={pending || refining}
-            title={refineEnabled
-              ? "Refine prompt before sending: ON — click to turn off"
-              : "Refine prompt before sending: OFF — click to turn on"}
+            onclick={() => beginRefine(draft.trim())}
+            disabled={pending || refining || draft.trim().length === 0}
+            title="Refine this prompt with dataset context, then review before sending (Enter sends as-is)"
           >
             <span aria-hidden="true">✨</span>
             <span>Refine</span>
@@ -1164,22 +1132,12 @@
     opacity: 0.5;
     cursor: default;
   }
-  .chat-refine-toggle.active {
-    border-color: rgb(124 58 237); /* violet-600 */
-    background: rgb(124 58 237); /* violet-600 */
-    color: rgb(255 255 255);
-  }
   :global(.dark) .chat-refine-toggle {
     border-color: rgb(51 65 85); /* slate-700 */
     color: rgb(203 213 225); /* slate-300 */
   }
   :global(.dark) .chat-refine-toggle:hover:not(:disabled) {
     background: rgb(30 41 59); /* slate-800 */
-  }
-  :global(.dark) .chat-refine-toggle.active {
-    border-color: rgb(139 92 246); /* violet-500 */
-    background: rgb(139 92 246);
-    color: rgb(255 255 255);
   }
 
   /* "Refining…" status text shown while the rewrite is in flight. */
