@@ -5,6 +5,7 @@
 
   import InlineChartView from "./InlineChartView.svelte";
   import Spinner from "./Spinner.svelte";
+  import IconSparkle from "~icons/fluent/sparkle-16-filled";
   import { sanitizeHTML } from "../utils/sanitize.js";
   import { summarizeToolCall } from "../utils/tool_summary.js";
 
@@ -839,7 +840,7 @@
         {:else if pending}
           <button type="button" class="chat-stop-btn" onclick={stop} title="Stop generating"> ◼ Stop </button>
         {/if}
-        <!-- On-demand prompt refinement (🪄 wand), icon-only, bottom-right.
+        <!-- On-demand prompt refinement (✦ sparkle icon), icon-only, bottom-right.
            Rewrites the current draft with EA context, then previews it; Enter
            always sends as-is. Hidden when the backend has no refine endpoint. -->
         {#if refineEndpoint}
@@ -851,7 +852,7 @@
             aria-label="Refine this prompt with dataset context"
             title="Refine this prompt with dataset context, then review before sending (Enter sends as-is)"
           >
-            <span aria-hidden="true">🪄</span>
+            <IconSparkle aria-hidden="true" />
           </button>
         {/if}
       </div>
@@ -1109,14 +1110,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.6rem;
-    height: 1.6rem;
+    width: 1.85rem;
+    height: 1.85rem;
     padding: 0;
     border-radius: 9999px;
-    border: 1px solid rgb(203 213 225); /* slate-300 */
-    background: transparent;
-    color: rgb(71 85 105); /* slate-600 */
-    font-size: 0.9rem;
+    border: 1px solid rgb(196 181 253); /* violet-300 */
+    background: rgb(243 232 255); /* violet-100 */
+    color: rgb(124 58 237); /* violet-600 */
     line-height: 1;
     cursor: pointer;
     transition:
@@ -1124,20 +1124,30 @@
       border-color 120ms ease,
       color 120ms ease;
   }
+  /* The icon component renders its own <svg>, which sits outside this
+     component's scoped styles — reach it with :global() and size it. */
+  .chat-refine-toggle :global(svg) {
+    width: 1.05rem;
+    height: 1.05rem;
+  }
   .chat-refine-toggle:hover:not(:disabled) {
-    background: rgb(241 245 249); /* slate-100 */
-    border-color: rgb(148 163 184); /* slate-400 */
+    background: rgb(221 214 254); /* violet-200 */
+    border-color: rgb(167 139 250); /* violet-400 */
+    color: rgb(109 40 217); /* violet-700 */
   }
   .chat-refine-toggle:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: default;
   }
   :global(.dark) .chat-refine-toggle {
-    border-color: rgb(51 65 85); /* slate-700 */
-    color: rgb(203 213 225); /* slate-300 */
+    border-color: rgb(109 40 217); /* violet-700 */
+    background: rgb(76 29 149 / 0.35); /* violet-900 tint */
+    color: rgb(196 181 253); /* violet-300 */
   }
   :global(.dark) .chat-refine-toggle:hover:not(:disabled) {
-    background: rgb(30 41 59); /* slate-800 */
+    background: rgb(91 33 182 / 0.5); /* violet-800 tint */
+    border-color: rgb(139 92 246); /* violet-500 */
+    color: rgb(221 214 254); /* violet-200 */
   }
 
   /* "Refining…" status text shown while the rewrite is in flight. */
