@@ -833,28 +833,26 @@
         disabled={pending || refining}
         class="w-full resize-none bg-transparent outline-none px-2 py-1 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 disabled:opacity-50"
       ></textarea>
-      <div class="flex items-center justify-between px-1 pt-1">
-        <!-- Refine toggle (wand). When ON, send first rewrites the prompt with
-           EA context and shows an editable preview. Hidden when the backend
-           advertises no refine endpoint. -->
+      <div class="flex items-center justify-end gap-2 px-1 pt-1">
+        {#if refining}
+          <span class="chat-refine-status">Refining…</span>
+        {:else if pending}
+          <button type="button" class="chat-stop-btn" onclick={stop} title="Stop generating"> ◼ Stop </button>
+        {/if}
+        <!-- On-demand prompt refinement (🪄 wand), icon-only, bottom-right.
+           Rewrites the current draft with EA context, then previews it; Enter
+           always sends as-is. Hidden when the backend has no refine endpoint. -->
         {#if refineEndpoint}
           <button
             type="button"
             class="chat-refine-toggle"
             onclick={() => beginRefine(draft.trim())}
             disabled={pending || refining || draft.trim().length === 0}
+            aria-label="Refine this prompt with dataset context"
             title="Refine this prompt with dataset context, then review before sending (Enter sends as-is)"
           >
-            <span aria-hidden="true">✨</span>
-            <span>Refine</span>
+            <span aria-hidden="true">🪄</span>
           </button>
-        {:else}
-          <span></span>
-        {/if}
-        {#if refining}
-          <span class="chat-refine-status">Refining…</span>
-        {:else if pending}
-          <button type="button" class="chat-stop-btn" onclick={stop} title="Stop generating"> ◼ Stop </button>
         {/if}
       </div>
     {/if}
@@ -1110,14 +1108,16 @@
   .chat-refine-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    padding: 0.125rem 0.5rem;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    padding: 0;
     border-radius: 9999px;
     border: 1px solid rgb(203 213 225); /* slate-300 */
     background: transparent;
     color: rgb(71 85 105); /* slate-600 */
-    font-size: 0.72rem;
-    line-height: 1.2;
+    font-size: 0.9rem;
+    line-height: 1;
     cursor: pointer;
     transition:
       background-color 120ms ease,
