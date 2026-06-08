@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
 import { describe, expect, test } from "vitest";
-import { shapeRetrieveResult } from "./retrieve_tool.js";
+import { detectCitationColumns, shapeRetrieveResult } from "./retrieve_tool.js";
 import type { SearchResultItem } from "../search/search.js";
 
 const item = (over: Partial<SearchResultItem>): SearchResultItem => ({
@@ -86,6 +86,42 @@ describe("shapeRetrieveResult", () => {
     expect(snippet.endsWith("…")).toBe(true);
   });
 
+  test("surfaces hydrated citation fields onto each row", () => {
+    const result = shapeRetrieveResult({
+      query: "q",
+      k: 1,
+      withinSelection: true,
+      predicate: null,
+      idColumn: "paper_id",
+      items: [
+        item({
+          id: 7,
+          text: "snippet",
+          fields: { title: "A Great Paper", doi: "10.1/abc", year: 2021 },
+        }),
+      ],
+    });
+    expect(result.rows[0].paper_id).toBe(7);
+    expect(result.rows[0].title).toBe("A Great Paper");
+    expect(result.rows[0].doi).toBe("10.1/abc");
+    expect(result.rows[0].year).toBe(2021);
+  });
+
+  test("skips null/empty citation fields and never clobbers id/text", () => {
+    const result = shapeRetrieveResult({
+      query: "q",
+      k: 1,
+      withinSelection: true,
+      predicate: null,
+      idColumn: "id",
+      items: [item({ id: "a", text: "real text", fields: { doi: null, title: "", text: "OOPS" } })],
+    });
+    expect(result.rows[0]).not.toHaveProperty("doi");
+    expect(result.rows[0]).not.toHaveProperty("title");
+    // The `text` snippet must win over a field also named "text".
+    expect(result.rows[0].text).toBe("real text");
+  });
+
   test("predicate null is echoed (whole-dataset retrieval)", () => {
     const result = shapeRetrieveResult({
       query: "q",
@@ -99,5 +135,26 @@ describe("shapeRetrieveResult", () => {
     expect(result.within_selection).toBe(false);
     expect(result.count).toBe(0);
     expect(result.rows).toEqual([]);
+  });
+});
+
+describe("detectCitationColumns", () => {
+  test("picks known citation columns, case-insensitively, preserving casing", () => {
+    const cols = ["paper_id", "Title", "DOI", "abstract", "year", "random"];
+    expect(detectCitationColumns(cols, "paper_id", "abstract")).toEqual(["Title", "DOI", "year"]);
+  });
+
+  test("excludes the id and text columns", () => {
+    // `title` is both a citation key and (here) the text column → excluded.
+    expect(detectCitationColumns(["id", "title", "doi"], "id", "title")).toEqual(["doi"]);
+  });
+
+  test("returns empty when no citation columns exist", () => {
+    expect(detectCitationColumns(["id", "x", "y", "cluster"], "id", null)).toEqual([]);
+  });
+
+  test("caps the number of surfaced columns", () => {
+    const cols = ["doi", "paper_id", "arxiv_id", "pmid", "pmcid", "url", "title", "authors", "year"];
+    expect(detectCitationColumns(cols, "row_id", null).length).toBeLessThanOrEqual(6);
   });
 });

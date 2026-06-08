@@ -17,6 +17,7 @@ import {
 import { findUnusedId } from "../utils/identifier.js";
 import { screenshot, type ScreenshotOptions } from "../utils/screenshot.js";
 import { validateChartSpec } from "./chart_spec_guard.js";
+import { guardReadOnlySql } from "./sql_guard.js";
 import { createConceptAxisTool } from "./concept_axis_tool.js";
 import { createContrastTool } from "./contrast_tool.js";
 import { createRetrieveTool, type RetrieveToolContext } from "./retrieve_tool.js";
@@ -179,6 +180,14 @@ For aggregate queries (COUNT, SUM, GROUP BY without per-row identity), there are
         additionalProperties: false,
       },
       execute: async (params: { query: string }) => {
+        // Read-only guard: the query is model-authored (and can be influenced
+        // by untrusted row content / prompt injection). Mirrors the backend's
+        // `_guard_select`; rejects writes/DDL/side-effecting statements before
+        // they reach the shared in-memory DuckDB table. See sql_guard.ts.
+        const guard = guardReadOnlySql(params.query);
+        if (!guard.ok) {
+          return jsonResponse({ error: "Query rejected", details: guard.error });
+        }
         const result = await delegate.context.coordinator.query(params.query);
         return jsonResponse(result.toArray());
       },

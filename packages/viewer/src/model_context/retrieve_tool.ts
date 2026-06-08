@@ -25,8 +25,58 @@ export interface RetrieveToolContext {
   xColumn?: string | null;
   /** Projection y column, if cheap to include. */
   yColumn?: string | null;
+  /**
+   * All column names in the dataset. Used to auto-detect citation columns
+   * (doi/pmid/url/title/…) to surface on each hit so the model can build
+   * real citation links from retrieval output. Optional/back-compat: when
+   * omitted, no citation columns are surfaced.
+   */
+  columns?(): string[];
   /** The current cross-filter predicate as a SQL string, or null if no selection. */
   currentPredicate(): string | null;
+}
+
+/**
+ * Column names that carry citation identity, mirroring the backend's
+ * `CITATION_KEYS` (chat.py). When present in the dataset, surfacing these on
+ * each retrieved row lets the model form real links (DOI/PubMed/url) and rich
+ * labels directly from `retrieve` output — without a follow-up `run_sql_query`
+ * just to fetch the identifier. Matched case-insensitively against column names.
+ */
+const CITATION_COLUMN_KEYS = new Set([
+  "doi",
+  "paper_id",
+  "arxiv_id",
+  "pmid",
+  "pmcid",
+  "url",
+  "title",
+  "authors",
+  "year",
+]);
+
+/** Cap on how many citation columns to surface, to keep the payload tight. */
+const MAX_CITATION_COLUMNS = 6;
+
+/** Per-value length cap for surfaced citation fields (titles/author lists). */
+const CITATION_VALUE_MAX_LEN = 300;
+
+/**
+ * Pick the citation-bearing columns to surface, given the dataset's columns.
+ * Excludes the id and text columns (already carried separately) and caps the
+ * count. Preserves the dataset's original column-name casing.
+ */
+export function detectCitationColumns(allColumns: string[], idColumn: string, textColumn: string | null): string[] {
+  const idLc = idColumn.toLowerCase();
+  const textLc = textColumn?.toLowerCase() ?? null;
+  const picked: string[] = [];
+  for (const name of allColumns) {
+    const lc = name.toLowerCase();
+    if (lc === idLc || lc === textLc) continue;
+    if (CITATION_COLUMN_KEYS.has(lc)) picked.push(name);
+    if (picked.length >= MAX_CITATION_COLUMNS) break;
+  }
+  return picked;
 }
 
 /** Hard cap on `k` so a runaway argument can't try to hydrate the whole table. */
@@ -48,6 +98,9 @@ export interface RetrieveRow {
   x?: number;
   /** Projection y, when a y column was configured. */
   y?: number;
+  // Citation columns (doi/pmid/url/title/…), when present in the dataset, are
+  // also keyed by their column name (see `detectCitationColumns`) so the model
+  // can build real links/labels directly from retrieval output.
 }
 
 /** The full JSON payload the tool returns. `rows` is the cited-rows surface. */
@@ -99,6 +152,15 @@ export function shapeRetrieveResult(args: {
     if (snippet != null) row.text = snippet;
     if (item.x != null) row.x = item.x;
     if (item.y != null) row.y = item.y;
+    // Surface citation columns (hydrated into item.fields under their column
+    // name) so the model can cite with real links. Skip null/empty; truncate
+    // long values (e.g. author lists). Don't clobber id/distance/text/x/y.
+    for (const key in item.fields) {
+      if (key in row) continue;
+      const value = item.fields[key];
+      if (value == null || value === "") continue;
+      row[key] = typeof value === "string" ? truncate(value, CITATION_VALUE_MAX_LEN) : value;
+    }
     return row;
   });
   return {
@@ -146,7 +208,7 @@ Rule of thumb: retrieve answers "which rows are ABOUT X?"; run_sql_query answers
 
 SELECTION SCOPING: by default (within_selection = true) retrieval is restricted to the user's current cross-filter selection (the same WHERE predicate every chart respects), so results stay consistent with what the user is looking at. Set within_selection = false to search the WHOLE dataset, ignoring the current selection — do this only when the user explicitly asks to search everything / "ignore my filter".
 
-Returns JSON: { query, k, within_selection, predicate, count, rows: [{ <id>, distance, text, x, y }, ...] } ranked best-first (smaller distance = closer). The rows are already wired to citation pills — you do NOT need to call run_sql_query afterward to "get the ids". Cite the returned snippets directly.
+Returns JSON: { query, k, within_selection, predicate, count, rows: [{ <id>, distance, text, x, y, ...citation columns }, ...] } ranked best-first (smaller distance = closer). When the dataset has citation columns (doi/pmid/url/title/authors/year), each row also carries them, so you can build real citation links and titles directly from retrieve output — you do NOT need a follow-up run_sql_query to fetch ids or DOIs. Cite the returned snippets directly.
 
 Not available when the dataset has no text column (this tool will report that); fall back to run_sql_query in that case.`,
     inputSchema: {
@@ -204,12 +266,17 @@ Not available when the dataset has no text column (this tool will report that); 
 
       // 2. Hydrate id + text (+ x/y) for each hit. We pass the same
       //    predicate so hydration can't surface rows outside the
-      //    selection even if the searcher ignored it.
+      //    selection even if the searcher ignored it. Also hydrate any
+      //    citation columns (doi/pmid/url/title/…) as additional fields so
+      //    the model can build real links from the result.
+      const citationColumns = ctx.columns ? detectCitationColumns(ctx.columns(), ctx.idColumn, ctx.textColumn) : [];
+      const additionalFields =
+        citationColumns.length > 0 ? Object.fromEntries(citationColumns.map((c) => [c, c])) : null;
       const items = await querySearchResultItems(
         ctx.coordinator,
         ctx.table,
         { id: ctx.idColumn, x: ctx.xColumn, y: ctx.yColumn, text: ctx.textColumn },
-        null,
+        additionalFields,
         predicate,
         hits,
       );
