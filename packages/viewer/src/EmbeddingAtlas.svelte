@@ -975,6 +975,11 @@
           textColumn: data.text ?? null,
           xColumn: data.projection?.x,
           yColumn: data.projection?.y,
+          // Live column-name list so `retrieve` can auto-detect and surface
+          // citation columns (doi/pmid/url/title/…) on each hit.
+          columns() {
+            return columns.map((c) => c.name);
+          },
           currentPredicate,
         },
       });
@@ -1011,9 +1016,7 @@
        settings gear); there is no top toolbar anymore. The settings
        UI is a modal overlay (see SettingsModal below) rather than
        an inline panel, so the row layout is just strip + main. -->
-  <div
-    class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800"
-  >
+  <div class="w-full h-full flex flex-row text-slate-800 bg-slate-200 dark:text-slate-200 dark:bg-slate-800">
     <AtlasIconStrip sections={stripSections} />
 
     <!-- Main column: just content. min-w-0 so the column can shrink
@@ -1150,8 +1153,8 @@
         </span>
       </div>
       <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-        Cap on the number of results the searcher returns. The dropdown shows the top 20; the rest land
-        in the table when the filter toggle is on.
+        Cap on the number of results the searcher returns. The dropdown shows the top 20; the rest land in the table
+        when the filter toggle is on.
       </div>
     </div>
     {#if searchModes.length > 1}
@@ -1165,8 +1168,8 @@
           options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
         />
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
-          Hybrid combines keyword + semantic matching in one ranked list. Full-text matches keywords
-          only; vector matches by semantic similarity to the embedding.
+          Hybrid combines keyword + semantic matching in one ranked list. Full-text matches keywords only; vector
+          matches by semantic similarity to the embedding.
         </div>
       </div>
     {/if}
